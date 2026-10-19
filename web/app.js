@@ -22,6 +22,7 @@ const isHR = () => ['hr_officer', 'hr_manager'].includes(role());
 const isHRM = () => role() === 'hr_manager';
 const canUsers = () => ['hr_manager', 'admin'].includes(role());
 const canRules = () => ['hr_manager', 'admin'].includes(role());
+const canEditEmp = () => isHR() || role() === 'admin';
 const ROLE_NAMES = {employee: 'Employee', hr_officer: 'HR Officer', hr_manager: 'HR Manager', admin: 'System Admin'};
 const STATUS_NAMES = {pending_manager: 'Waiting for manager', pending_hr: 'Waiting for HR', approved: 'Approved', rejected: 'Rejected', returned: 'Returned for changes', cancelled: 'Cancelled'};
 const DOC_TYPES = {passport: 'Passport', resident_card: 'Resident card', work_permit: 'Work permit', visa: 'Visa', civil_id: 'Civil ID', contract: 'Contract',
@@ -406,7 +407,7 @@ V.employees = async () => {
   const ql = empFilter.q.toLowerCase();
   const shown = rows.filter(e => (empFilter.show === 'all' || (empFilter.show === 'current') === !['resigned', 'terminated'].includes(e.status))
     && (!ql || [e.full_name, e.employee_no, e.job_title, deptName(e.department_id), e.nationality].join(' ').toLowerCase().includes(ql)));
-  const actions = isHR() ? `<button class="btn" data-a="importEmp">Import from Excel (CSV)</button><button class="btn primary" data-a="newEmp">Add employee</button>` : '';
+  const actions = canEditEmp() ? `<button class="btn" data-a="importEmp">Import from Excel (CSV)</button><button class="btn primary" data-a="newEmp">Add employee</button>` : '';
   return header(isHR() || role() === 'admin' ? 'Employees' : 'My team', `${shown.length} shown`, actions) + `<div class="panel">
     <div class="row" style="margin-bottom:12px"><input id="empQ" placeholder="Search name, number, title, department" value="${esc(empFilter.q)}" style="max-width:340px">
     <select id="empShow" style="width:auto"><option value="current" ${empFilter.show === 'current' ? 'selected' : ''}>Current staff</option><option value="left" ${empFilter.show === 'left' ? 'selected' : ''}>Left the company</option><option value="all" ${empFilter.show === 'all' ? 'selected' : ''}>Everyone</option></select></div>
@@ -442,7 +443,7 @@ async function openEmployee(id){
     ${pay ? `<dt>Basic salary</dt><dd class="mono">OMR ${omr(pay.basic_salary)}</dd><dt>Allowances</dt><dd class="mono">OMR ${omr(pay.allowances)}</dd>${pay.bank_iban ? `<dt>IBAN</dt><dd class="mono">${esc(pay.bank_iban)}</dd>` : ''}` : ''}
     ${isHR() || isHRM() ? `<dt>End of service</dt><dd class="small">${eos}</dd>` : ''}
     ${isHR() || canUsers() ? `<dt>Login</dt><dd>${prof ? `${esc(prof.username)} · ${ROLE_NAMES[prof.role]}${prof.status === 'disabled' ? ' · disabled' : ''}` : '<span class="muted">No login yet</span>'}</dd>` : ''}</dl>
-    ${isHR() ? `<div class="row" style="margin-bottom:18px"><button class="btn primary" data-a="editEmp" data-id="${e.id}">Edit details</button><button class="btn" data-a="newDoc" data-id="${e.id}">Upload document</button></div>` : ''}
+    ${canEditEmp() ? `<div class="row" style="margin-bottom:18px"><button class="btn primary" data-a="editEmp" data-id="${e.id}">Edit details</button>${isHR() ? `<button class="btn" data-a="newDoc" data-id="${e.id}">Upload document</button>` : ''}</div>` : ''}
     ${isHR() || id === S.emp?.id ? `<h2>Documents</h2>${docsTable(docs, false)}` : ''}`);
 }
 function docsTable(docs, withEmp){
