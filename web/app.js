@@ -52,7 +52,10 @@ const ERRORS = {
   EMPLOYEE_REQUIRED: () => 'Choose the employee this login belongs to.',
   EMPLOYEE_LEFT: () => 'This employee has left the company.',
   NOT_YOURSELF: () => 'You cannot change your own account here.',
-  NO_EMPLOYEE_RECORD: () => 'Your login is not linked to an employee record. Ask HR to link it.'
+  NO_EMPLOYEE_RECORD: () => 'Your login is not linked to an employee record. Ask HR to link it.',
+  PAYROLL_LOCKED: () => 'This month is approved. Move it back to draft to change it.',
+  PAYROLL_EMPTY: () => 'There are no payroll lines to approve. Prepare the payroll first.',
+  BAD_STATUS_CHANGE: () => 'That step is not possible from the current status.'
 };
 function errText(e){
   const m = String(e?.message || e || 'Something went wrong');
@@ -199,12 +202,13 @@ async function boot(){
 }
 function navItems(){
   const n = [];
-  if (S.emp) n.push(['dashboard', 'Dashboard'], ['leave', 'My leave'], ['letters', 'My letters']);
+  if (S.emp) n.push(['dashboard', 'Dashboard'], ['leave', 'My leave'], ['payslips', 'My payslips'], ['letters', 'My letters']);
   if (S.emp && !isHR()) n.push(['mydocs', 'My documents']);
   if (S.isManager || isHR()) n.push(['approvals', 'Approvals']);
   if (isHR() || role() === 'admin') n.push(['employees', 'Employees']);
   else if (S.isManager) n.push(['employees', 'My team']);
   if (isHR()) n.push(['documents', 'Documents'], ['letterq', 'Letter requests'], ['reports', 'Reports']);
+  if (isHRM()) n.push(['payroll', 'Payroll']);
   if (canRules()) n.push(['rules', 'Leave rules']);
   if (canUsers()) n.push(['users', 'User accounts'], ['audit', 'Audit log']);
   return n;
@@ -417,13 +421,15 @@ V.employees = async () => {
 };
 async function openEmployee(id){
   const e = await q(sb.from('employees').select('*').eq('id', id).single());
-  const [docs, mgr, pay, prof, bal] = await Promise.all([
+  const [docs, mgr, pay, prof, bal, allows] = await Promise.all([
     isHR() || id === S.emp?.id ? q(sb.from('documents').select('*').eq('employee_id', id).order('expiry_date')) : Promise.resolve([]),
     e.manager_id ? q(sb.from('employees').select('full_name').eq('id', e.manager_id).maybeSingle()) : Promise.resolve(null),
     isHRM() ? q(sb.from('employee_pay').select('*').eq('employee_id', id).maybeSingle()) : Promise.resolve(null),
     isHR() || canUsers() ? q(sb.from('profiles').select('username, role, status').eq('employee_id', id).maybeSingle()) : Promise.resolve(null),
-    q(sb.rpc('leave_balance', {p_employee: id, p_type: 'annual', p_year: year()})).catch(() => [])
+    q(sb.rpc('leave_balance', {p_employee: id, p_type: 'annual', p_year: year()})).catch(() => []),
+    isHRM() ? q(sb.from('pay_allowances').select('*').eq('employee_id', id).order('start_date', {ascending: false})) : Promise.resolve([])
   ]);
+  const allowNow = allows.filter(a => a.start_date <= today() && (!a.end_date || a.end_date >= today())).reduce((s, a) => s + Number(a.amount), 0);
   const months = (() => { const a = dt(e.join_date), b = dt(e.end_date || today()); return (b.getUTCFullYear() - a.getUTCFullYear()) * 12 + b.getUTCMonth() - a.getUTCMonth() - (b.getUTCDate() < a.getUTCDate() ? 1 : 0); })();
   const b = bal[0];
   let eos = '';
@@ -440,10 +446,11 @@ async function openEmployee(id){
     ${e.email ? `<dt>Email</dt><dd>${esc(e.email)}</dd>` : ''}${e.phone ? `<dt>Phone</dt><dd>${esc(e.phone)}</dd>` : ''}
     ${e.emergency_contact ? `<dt>Emergency</dt><dd>${esc(e.emergency_contact)}</dd>` : ''}
     ${b && b.remaining != null ? `<dt>Annual leave</dt><dd class="mono">${b.remaining} of ${b.entitled} days left</dd>` : ''}
-    ${pay ? `<dt>Basic salary</dt><dd class="mono">OMR ${omr(pay.basic_salary)}</dd><dt>Allowances</dt><dd class="mono">OMR ${omr(pay.allowances)}</dd>${pay.bank_iban ? `<dt>IBAN</dt><dd class="mono">${esc(pay.bank_iban)}</dd>` : ''}` : ''}
+    ${pay ? `<dt>Basic salary</dt><dd class="mono">OMR ${omr(pay.basic_salary)}</dd><dt>Allowances now</dt><dd class="mono">OMR ${omr(allowNow)}</dd><dt>Gross salary</dt><dd class="mono"><b>OMR ${omr(Number(pay.basic_salary) + allowNow)}</b></dd>${pay.bank_iban ? `<dt>Bank account</dt><dd class="mono">${esc(pay.bank_iban)}${pay.bank_bic ? ' · ' + esc(pay.bank_bic) : ''}</dd>` : ''}` : ''}
     ${isHR() || isHRM() ? `<dt>End of service</dt><dd class="small">${eos}</dd>` : ''}
     ${isHR() || canUsers() ? `<dt>Login</dt><dd>${prof ? `${esc(prof.username)} · ${ROLE_NAMES[prof.role]}${prof.status === 'disabled' ? ' · disabled' : ''}` : '<span class="muted">No login yet</span>'}</dd>` : ''}</dl>
     ${canEditEmp() ? `<div class="row" style="margin-bottom:18px"><button class="btn primary" data-a="editEmp" data-id="${e.id}">Edit details</button>${isHR() ? `<button class="btn" data-a="newDoc" data-id="${e.id}">Upload document</button>` : ''}</div>` : ''}
+    ${isHRM() ? allowancesBlock(e.id, allows) : ''}
     ${isHR() || id === S.emp?.id ? `<h2>Documents</h2>${docsTable(docs, false)}` : ''}`);
 }
 function docsTable(docs, withEmp){
@@ -479,8 +486,9 @@ async function employeeForm(id){
       <div class="f"><label for="ef_status">Status</label><select id="ef_status">${Object.entries(EMP_STATUS).map(([k, v]) => opt(k, e.status, v)).join('')}</select></div>
       ${inp('end_date', 'Last working day', 'date')}
       ${isHRM() ? `<div class="f"><label for="pf_basic">Basic salary (OMR)</label><input id="pf_basic" type="number" step="0.001" min="0" value="${pay?.basic_salary ?? ''}"></div>
-        <div class="f"><label for="pf_allow">Allowances (OMR)</label><input id="pf_allow" type="number" step="0.001" min="0" value="${pay?.allowances ?? ''}"></div>
-        <div class="f full"><label for="pf_iban">Bank IBAN</label><input id="pf_iban" value="${esc(pay?.bank_iban || '')}"></div>` : ''}
+        <div class="f"><label for="pf_bic">Employee's bank code (BIC)</label><input id="pf_bic" value="${esc(pay?.bank_bic || '')}" placeholder="BMUSOMRX for Bank Muscat"></div>
+        <div class="f full"><label for="pf_iban">Bank account or IBAN</label><input id="pf_iban" value="${esc(pay?.bank_iban || '')}"></div>
+        <p class="muted small full" style="margin:0">Allowances, including temporary ones, are added on the employee page after saving.</p>` : ''}
     </div>
     <p class="muted small">Setting the status to Resigned or Terminated disables the employee's login at once. The record is kept.</p>
     <div id="efErr" class="msg bad" hidden></div>
@@ -507,8 +515,8 @@ async function saveEmployee(form){
     if (id && g('employee_no').trim()) row.employee_no = g('employee_no').trim();
     if (['resigned', 'terminated'].includes(row.status) && !row.end_date) row.end_date = today();
     const saved = id ? await q(sb.from('employees').update(row).eq('id', id).select().single()) : await q(sb.from('employees').insert(row).select().single());
-    if (isHRM() && ($('pf_basic').value !== '' || $('pf_allow').value !== '' || $('pf_iban').value !== '')){
-      await q(sb.from('employee_pay').upsert({employee_id: saved.id, basic_salary: Number($('pf_basic').value || 0), allowances: Number($('pf_allow').value || 0), bank_iban: $('pf_iban').value.trim(), updated_at: new Date().toISOString()}));
+    if (isHRM() && ($('pf_basic').value !== '' || $('pf_bic').value !== '' || $('pf_iban').value !== '')){
+      await q(sb.from('employee_pay').upsert({employee_id: saved.id, basic_salary: Number($('pf_basic').value || 0), bank_bic: $('pf_bic').value.trim().toUpperCase(), bank_iban: $('pf_iban').value.trim(), updated_at: new Date().toISOString()}));
     }
     toast(id ? 'Employee saved' : 'Employee added');
     await render(); openEmployee(saved.id);
@@ -627,6 +635,10 @@ async function printLetter(id){
   const r = await q(sb.from('letter_requests').select('*').eq('id', id).single());
   const e = await q(sb.from('employees').select('*').eq('id', r.employee_id).single());
   const pay = r.letter_type === 'salary_certificate' ? await q(sb.from('employee_pay').select('*').eq('employee_id', e.id).maybeSingle()) : null;
+  if (pay){
+    const al = await q(sb.from('pay_allowances').select('amount, start_date, end_date').eq('employee_id', e.id));
+    pay.allowances = al.filter(a => a.start_date <= today() && (!a.end_date || a.end_date >= today())).reduce((s, a) => s + Number(a.amount), 0);
+  }
   const docs = await q(sb.from('documents').select('doc_type, doc_number').eq('employee_id', e.id).in('doc_type', ['passport', 'civil_id']));
   const idDoc = docs.find(d => d.doc_type === (e.nat_type === 'omani' ? 'civil_id' : 'passport'));
   const he = e.gender === 'female' ? 'she' : 'he', his = e.gender === 'female' ? 'her' : 'his', title = e.gender === 'female' ? 'Ms.' : 'Mr.';
@@ -680,6 +692,208 @@ async function exportEmployees(){
   const lines = [cols.join(','), ...emps.map(e => cols.map(c => csvCell(c === 'department' ? deptName(e.department_id) : c === 'manager_employee_no' ? names[e.manager_id] : e[c])).join(','))];
   downloadText(`carbon-people-employees-${today()}.csv`, lines.join('\n'));
   sb.rpc('log_event', {p_action: 'export', p_detail: 'employees csv'});
+}
+
+// ---- Payroll
+const RUN_STATUS = {draft: ['Draft', 'p-warn'], approved: ['Approved', 'p-info'], paid: ['Paid', 'p-good']};
+const monthName = period => dt(period).toLocaleDateString('en-GB', {month: 'long', year: 'numeric', timeZone: 'UTC'});
+const payCfg = () => S.settings.payroll || {};
+let payMonth = today().slice(0, 7);
+const sum = (rows, k) => rows.reduce((s, r) => s + Number(r[k] || 0), 0);
+const leaveDed = i => Number(i.unpaid_deduction) + Number(i.sick_deduction);
+
+V.payroll = async () => {
+  const period = payMonth + '-01';
+  const run = await q(sb.from('payroll_runs').select('*').eq('period', period).maybeSingle());
+  const [items, adjs, emps, pays] = run ? await Promise.all([
+    q(sb.from('payroll_items').select('*, employees(full_name, employee_no, department_id)').eq('run_id', run.id)),
+    q(sb.from('payroll_adjustments').select('*, employees(full_name)').eq('run_id', run.id).order('created_at')),
+    q(sb.from('employees').select('id, full_name').not('status', 'in', '(resigned,terminated)').order('full_name')),
+    q(sb.from('employee_pay').select('employee_id, basic_salary, bank_iban, bank_bic'))
+  ]) : [[], [], [], []];
+  items.sort((a, b) => (a.employees?.full_name || '').localeCompare(b.employees?.full_name || ''));
+  const payBy = Object.fromEntries(pays.map(p => [p.employee_id, p]));
+  const noSalary = items.filter(i => !Number(payBy[i.employee_id]?.basic_salary));
+  const noBank = items.filter(i => !payBy[i.employee_id]?.bank_iban);
+  const st = run ? RUN_STATUS[run.status] : null;
+  let actions = `<input id="payMonth" type="month" value="${payMonth}" style="width:auto" aria-label="Month">`;
+  if (!run || run.status === 'draft') actions += `<button class="btn ${run ? '' : 'primary'}" data-a="preparePay">${run ? 'Recalculate' : 'Prepare payroll'}</button>`;
+  if (run?.status === 'draft' && items.length) actions += `<button class="btn primary" data-a="payStatus" data-id="${run.id}" data-s="approved">Approve</button>`;
+  if (run?.status === 'approved') actions += `<button class="btn" data-a="payStatus" data-id="${run.id}" data-s="draft">Back to draft</button><button class="btn primary" data-a="payStatus" data-id="${run.id}" data-s="paid">Mark as paid</button>`;
+  if (run && run.status !== 'draft') actions += `<button class="btn" data-a="exportPay" data-id="${run.id}">Payroll (CSV)</button><button class="btn" data-a="exportWps" data-id="${run.id}">Bank Muscat WPS file</button>`;
+  const gross = sum(items, 'gross'), net = sum(items, 'net'), er = sum(items, 'spf_employer');
+  const tiles = run ? `<div class="grid tiles" style="margin-bottom:16px">
+    <div class="panel tile"><div class="k">Status</div><div class="v" style="font-size:22px">${pill(st[0], st[1])}</div><div class="n">${run.status === 'draft' ? 'Employees cannot see it yet' : run.status === 'approved' ? 'Payslips are visible to employees' : 'Paid ' + fmt(run.paid_at)}</div></div>
+    <div class="panel tile"><div class="k">Net to bank</div><div class="v">${omr(net)}</div><div class="n">OMR for ${items.length} employees</div></div>
+    <div class="panel tile"><div class="k">Gross pay</div><div class="v">${omr(gross)}</div><div class="n">basic ${omr(sum(items, 'basic'))} + allowances ${omr(sum(items, 'allowances_total'))}</div></div>
+    <div class="panel tile"><div class="k">Cost to company</div><div class="v">${omr(gross - sum(items, 'unpaid_deduction') - sum(items, 'sick_deduction') + sum(items, 'additions') - sum(items, 'deductions') + er)}</div><div class="n">includes employer SPF ${omr(er)}</div></div></div>` : '';
+  const warn = run && (noSalary.length || noBank.length) ? `<div class="msg bad">${noSalary.length ? `${noSalary.length} with no basic salary: ${noSalary.map(i => esc(i.employees?.full_name)).join(', ')}. ` : ''}${noBank.length ? `${noBank.length} with no bank account: ${noBank.map(i => esc(i.employees?.full_name)).join(', ')}.` : ''}</div>` : '';
+  const itemsTbl = table(['Employee', 'Days', 'Basic', 'Allowances', 'Gross', 'Leave deductions', 'SPF (employee)', 'Other +/-', 'Net'], [...items.map(i => `<tr class="click" data-a="payslip" data-id="${i.id}">
+    <td>${esc(i.employees?.full_name)}<div class="muted small">${esc(i.employees?.employee_no)} · ${i.nat_type === 'omani' ? 'Omani' : 'Expat'}</div></td><td class="mono">${i.days_paid}/${i.days_in_month}</td>
+    <td class="mono">${omr(i.basic)}</td><td class="mono">${omr(i.allowances_total)}${i.allowances.some(a => a.temporary) ? ' ' + pill('temp', 'p-mute') : ''}</td><td class="mono">${omr(i.gross)}</td>
+    <td class="mono">${leaveDed(i) ? omr(-leaveDed(i)) : ''}${i.unpaid_days ? `<div class="muted small">${i.unpaid_days}d unpaid</div>` : ''}${i.sick_days ? `<div class="muted small">${i.sick_days}d sick</div>` : ''}</td>
+    <td class="mono">${Number(i.spf_employee) ? omr(-i.spf_employee) : ''}</td><td class="mono">${Number(i.additions) - Number(i.deductions) ? omr(Number(i.additions) - Number(i.deductions)) : ''}</td><td class="mono"><b>${omr(i.net)}</b></td></tr>`),
+    ...(items.length ? [`<tr><td><b>Total</b></td><td></td><td class="mono"><b>${omr(sum(items, 'basic'))}</b></td><td class="mono"><b>${omr(sum(items, 'allowances_total'))}</b></td><td class="mono"><b>${omr(gross)}</b></td>
+      <td class="mono"><b>${omr(-(sum(items, 'unpaid_deduction') + sum(items, 'sick_deduction')))}</b></td><td class="mono"><b>${omr(-sum(items, 'spf_employee'))}</b></td><td class="mono"><b>${omr(sum(items, 'additions') - sum(items, 'deductions'))}</b></td><td class="mono"><b>${omr(net)}</b></td></tr>`] : [])],
+    'No lines yet. Prepare the payroll to calculate this month.');
+  const adjPanel = run ? `<div class="panel" style="margin-top:16px"><h2>One-off additions and deductions</h2>
+    ${table(['Employee', 'Type', 'Description', 'Amount', ''], adjs.map(a => `<tr><td>${esc(a.employees?.full_name)}</td><td>${a.kind === 'addition' ? pill('Addition', 'p-good') : pill('Deduction', 'p-bad')}</td><td>${esc(a.name)}</td><td class="mono">${omr(a.amount)}</td>
+      <td>${run.status === 'draft' ? `<button class="btn sm danger" data-a="delAdj" data-id="${a.id}">Remove</button>` : ''}</td></tr>`), 'None this month.')}
+    ${run.status === 'draft' ? `<form id="adjForm" class="row" style="margin-top:12px"><select id="adjEmp" style="width:auto;max-width:220px" aria-label="Employee">${emps.map(e => `<option value="${e.id}">${esc(e.full_name)}</option>`).join('')}</select>
+      <select id="adjKind" style="width:auto" aria-label="Type"><option value="addition">Addition</option><option value="deduction">Deduction</option></select>
+      <input id="adjName" placeholder="For example: Overtime, Bonus, Loan repayment" style="flex:1;min-width:180px" required aria-label="Description">
+      <input id="adjAmt" type="number" step="0.001" min="0.001" placeholder="OMR" style="width:110px" required aria-label="Amount"><button class="btn primary">Add</button></form>
+      <p class="muted small">Additions and deductions are not part of the SPF wage. Recalculate after adding them.</p>` : ''}</div>` : '';
+  const c = payCfg();
+  const num = (k, label, step = '0.01') => `<div class="f"><label for="pc_${k}">${label}</label><input id="pc_${k}" type="number" step="${step}" min="0" value="${c[k] ?? ''}"></div>`;
+  const txt = (k, label, ph = '') => `<div class="f"><label for="pc_${k}">${label}</label><input id="pc_${k}" value="${esc(c[k] ?? '')}" placeholder="${ph}"></div>`;
+  const settings = `<details class="panel" style="margin-top:16px"><summary><b>Payroll settings</b> <span class="muted small">SPF rates, sick pay and the company's bank details for WPS</span></summary>
+    <div class="fgrid" style="margin-top:14px">${num('spf_omani_employee', 'SPF Omani: employee %')}${num('spf_omani_employer', 'SPF Omani: employer %')}${num('spf_cap', 'SPF wage cap (OMR)', '1')}${num('spf_expat_employer', 'SPF expat: employer %')}
+      ${num('savings_scheme_rate', 'Expat savings scheme % of basic')}<div class="f"><label for="pc_savings_scheme_active">Savings scheme</label><select id="pc_savings_scheme_active"><option value="false">Not started yet</option><option value="true" ${c.savings_scheme_active ? 'selected' : ''}>Active: add to employer cost</option></select></div>
+      ${num('day_basis', 'Days in a month for daily rate', '1')}<div class="f"><label for="pc_sick_pay">Sick pay (up to day : % paid)</label><input id="pc_sick_pay" class="mono" value="${esc((c.sick_pay || []).map(t => t.join(':')).join(', '))}"></div>
+      ${txt('employer_cr', 'Company CR number')}${txt('payer_account', 'Company Bank Muscat account')}${txt('payer_bank', 'Company bank code', 'BMUSOMRX')}</div>
+    <button class="btn" data-a="savePayCfg">Save settings</button><p class="muted small">Defaults follow the Social Protection Law as of 2026. Changes apply the next time a month is prepared or recalculated.</p></details>`;
+  return header('Payroll', run ? `${monthName(period)} · prepared ${fmtTime(run.prepared_at)}` : `${monthName(period)} has not been prepared yet`, actions) + warn + tiles + `<div class="panel">${itemsTbl}</div>` + adjPanel + settings;
+};
+
+async function preparePay(){
+  await q(sb.rpc('prepare_payroll', {p_period: payMonth + '-01'}));
+  toast('Payroll calculated'); render();
+}
+async function savePayCfg(){
+  const v = k => $('pc_' + k).value.trim();
+  const n = k => v(k) === '' ? null : Number(v(k));
+  const tiers = v('sick_pay').split(',').map(s => s.split(':').map(Number)).filter(t => t.length === 2 && t.every(x => x >= 0));
+  const value = {...payCfg(), spf_omani_employee: n('spf_omani_employee'), spf_omani_employer: n('spf_omani_employer'), spf_cap: n('spf_cap'), spf_expat_employer: n('spf_expat_employer'),
+    savings_scheme_rate: n('savings_scheme_rate'), savings_scheme_active: v('savings_scheme_active') === 'true', day_basis: n('day_basis') || 30, sick_pay: tiers,
+    employer_cr: v('employer_cr'), payer_account: v('payer_account'), payer_bank: v('payer_bank') || 'BMUSOMRX'};
+  await q(sb.from('settings').upsert({key: 'payroll', value}));
+  await loadLookups(); toast('Payroll settings saved');
+}
+
+// Payslip: one employee's month, as the employee sees it.
+async function payslipData(itemId){
+  const i = await q(sb.from('payroll_items').select('*, employees(full_name, employee_no, job_title, department_id), payroll_runs(period, status)').eq('id', itemId).single());
+  const [adjs, pay] = await Promise.all([
+    q(sb.from('payroll_adjustments').select('kind, name, amount').eq('run_id', i.run_id).eq('employee_id', i.employee_id).order('created_at')),
+    q(sb.from('employee_pay').select('bank_iban').eq('employee_id', i.employee_id).maybeSingle())
+  ]);
+  return {i, adjs, iban: pay?.bank_iban || ''};
+}
+function payslipHtml({i, adjs, iban}){
+  const line = (label, amt, note = '') => `<tr><td>${esc(label)}${note ? `<div class="muted small">${esc(note)}</div>` : ''}</td><td class="mono" style="text-align:right">${omr(amt)}</td></tr>`;
+  const earn = [line('Basic salary', i.basic, i.days_paid < i.days_in_month ? `${i.days_paid} of ${i.days_in_month} days` : ''),
+    ...i.allowances.map(a => line(a.name, a.amount, a.temporary ? 'Temporary allowance' : '')),
+    ...adjs.filter(a => a.kind === 'addition').map(a => line(a.name, a.amount))];
+  const ded = [...(Number(i.unpaid_deduction) ? [line('Unpaid leave', i.unpaid_deduction, `${i.unpaid_days} days`)] : []),
+    ...(Number(i.sick_deduction) ? [line('Sick leave (reduced pay)', i.sick_deduction, `${i.sick_days} sick days this month`)] : []),
+    ...(Number(i.spf_employee) ? [line('Social Protection Fund', i.spf_employee, `${payCfg().spf_omani_employee ?? 8}% of OMR ${omr(i.spf_base)}`)] : []),
+    ...adjs.filter(a => a.kind === 'deduction').map(a => line(a.name, a.amount))];
+  const earnTotal = Number(i.gross) + Number(i.additions), dedTotal = earnTotal - Number(i.net);
+  const tbl = (title, rows, total) => `<table><thead><tr><th>${title}</th><th style="text-align:right">OMR</th></tr></thead><tbody>${rows.join('') || '<tr><td class="muted">None</td><td></td></tr>'}
+    <tr><td><b>Total</b></td><td class="mono" style="text-align:right"><b>${omr(total)}</b></td></tr></tbody></table>`;
+  return `<dl class="dl"><dt>Employee</dt><dd>${esc(i.employees?.full_name)} <span class="mono muted">${esc(i.employees?.employee_no)}</span></dd>
+    <dt>Position</dt><dd>${esc(i.employees?.job_title)}${i.employees?.department_id ? ' · ' + esc(deptName(i.employees.department_id)) : ''}</dd>
+    <dt>Pay period</dt><dd>${monthName(i.payroll_runs.period)}</dd>${iban ? `<dt>Paid to</dt><dd class="mono">${esc(iban.length > 8 ? iban.slice(0, 4) + ' •••• ' + iban.slice(-4) : iban)}</dd>` : ''}</dl>
+    <div class="grid two">${tbl('Earnings', earn, earnTotal)}${tbl('Deductions', ded, dedTotal)}</div>
+    <div class="calc" style="margin-top:16px;display:flex;justify-content:space-between;font-size:16px"><b>Net pay</b><b class="mono">OMR ${omr(i.net)}</b></div>
+    ${Number(i.spf_employer) ? `<p class="muted small">The company also pays OMR ${omr(i.spf_employer)} to the Social Protection Fund for you. This is not deducted from your pay.</p>` : ''}`;
+}
+async function openPayslip(itemId){
+  const d = await payslipData(itemId);
+  drawer(drawerHead('Payslip') + payslipHtml(d) + `<div class="row"><button class="btn primary" data-a="printPayslip" data-id="${itemId}">Print or save as PDF</button></div>`);
+}
+async function printPayslip(itemId){
+  const d = await payslipData(itemId);
+  const company = S.settings.company || 'Carbon Engineering Design';
+  const w = window.open('', '_blank');
+  if (!w){ toast('Allow pop-ups for this site to print payslips.'); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Payslip ${monthName(d.i.payroll_runs.period)} - ${esc(d.i.employees?.full_name)}</title>
+    <style>body{font-family:Arial,sans-serif;font-size:13px;color:#111;max-width:760px;margin:36px auto;padding:0 24px}.co{font-weight:700;font-size:18px;border-bottom:2px solid #1d6a83;padding-bottom:8px;display:flex;justify-content:space-between;align-items:baseline}
+    .co span{font-size:13px;font-weight:400}.dl{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;margin:18px 0}.dl dt{color:#555}.dl dd{margin:0}.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+    table{width:100%;border-collapse:collapse}th{text-align:left;font-size:11px;text-transform:uppercase;color:#555;border-bottom:1px solid #999;padding:6px 4px}td{padding:6px 4px;border-bottom:1px solid #ddd;vertical-align:top}
+    .mono{font-family:monospace;font-size:13px}.muted{color:#666}.small{font-size:11px}.calc{background:#eef3f5;padding:10px 12px;border-radius:4px;margin-top:16px;display:flex;justify-content:space-between;font-size:16px}</style></head><body>
+    <div class="co">${esc(company)}<span>Payslip · ${monthName(d.i.payroll_runs.period)}</span></div>${payslipHtml(d)}
+    <p class="muted small" style="margin-top:28px">This payslip was generated by Carbon People and needs no signature.</p>
+    <script>window.onload=()=>window.print()<\/script></body></html>`);
+  w.document.close();
+}
+
+V.payslips = async () => {
+  const rows = await q(sb.from('payroll_items').select('id, net, gross, payroll_runs(period, status)').eq('employee_id', S.emp.id));
+  rows.sort((a, b) => b.payroll_runs.period.localeCompare(a.payroll_runs.period));
+  const latest = rows[0];
+  return header('My payslips', 'Your pay each month, shown once HR approves the payroll') +
+    (latest ? `<div class="grid tiles" style="margin-bottom:16px"><div class="panel tile"><div class="k">${monthName(latest.payroll_runs.period)}</div><div class="v">OMR ${omr(latest.net)}</div><div class="n">net pay ${latest.payroll_runs.status === 'paid' ? 'paid to your bank' : 'to be paid to your bank'}</div></div></div>` : '') +
+    `<div class="panel">${table(['Month', 'Gross', 'Net pay', 'Status', ''], rows.map(r => `<tr class="click" data-a="payslip" data-id="${r.id}"><td>${monthName(r.payroll_runs.period)}</td><td class="mono">${omr(r.gross)}</td>
+      <td class="mono"><b>${omr(r.net)}</b></td><td>${pill(...RUN_STATUS[r.payroll_runs.status])}</td><td><button class="btn sm" data-a="printPayslip" data-id="${r.id}">Print</button></td></tr>`), 'No payslips yet.')}</div>`;
+};
+
+async function runExportData(runId){
+  const run = await q(sb.from('payroll_runs').select('*').eq('id', runId).single());
+  const items = await q(sb.from('payroll_items').select('*, employees(full_name, employee_no, nat_type)').eq('run_id', runId));
+  items.sort((a, b) => (a.employees?.employee_no || '').localeCompare(b.employees?.employee_no || ''));
+  return {run, items};
+}
+async function exportPay(runId){
+  const {run, items} = await runExportData(runId);
+  const cols = ['employee_no', 'full_name', 'nat_type', 'days_paid', 'basic', 'allowances', 'gross', 'unpaid_days', 'unpaid_deduction', 'sick_days', 'sick_deduction', 'additions', 'deductions', 'spf_base', 'spf_employee', 'spf_employer', 'net'];
+  const lines = [cols.join(','), ...items.map(i => cols.map(c => csvCell(c === 'employee_no' || c === 'full_name' ? i.employees?.[c] : c === 'allowances' ? i.allowances_total : i[c])).join(','))];
+  downloadText(`carbon-people-payroll-${run.period.slice(0, 7)}.csv`, lines.join('\n'));
+  sb.rpc('log_event', {p_action: 'export', p_detail: 'payroll csv ' + run.period.slice(0, 7)});
+}
+// Salary Information File for the Oman Wage Protection System, uploaded to Bank Muscat business banking.
+async function exportWps(runId){
+  const {run, items} = await runExportData(runId);
+  const ids = items.map(i => i.employee_id);
+  const [pays, docs] = await Promise.all([
+    q(sb.from('employee_pay').select('employee_id, bank_iban, bank_bic').in('employee_id', ids)),
+    q(sb.from('documents').select('employee_id, doc_type, doc_number').in('employee_id', ids).in('doc_type', ['civil_id', 'resident_card', 'passport']))
+  ]);
+  const c = payCfg();
+  const payBy = Object.fromEntries(pays.map(p => [p.employee_id, p]));
+  const idOf = i => { const d = docs.filter(x => x.employee_id === i.employee_id); const civ = d.find(x => x.doc_type === 'civil_id' || x.doc_type === 'resident_card'); const pp = d.find(x => x.doc_type === 'passport');
+    return civ ? ['C', civ.doc_number] : pp ? ['P', pp.doc_number] : ['', '']; };
+  const problems = [];
+  if (!c.employer_cr) problems.push('Company CR number is missing (Payroll settings).');
+  if (!c.payer_account) problems.push('Company bank account is missing (Payroll settings).');
+  const rows = items.map(i => {
+    const p = payBy[i.employee_id] || {}, [t, n] = idOf(i);
+    if (!p.bank_iban) problems.push(`${i.employees?.full_name}: no bank account.`);
+    if (!n) problems.push(`${i.employees?.full_name}: no civil ID, resident card or passport number in Documents.`);
+    return [t, n, i.employees?.employee_no, i.employees?.full_name, p.bank_bic || '', p.bank_iban || '', 'M', i.days_paid, (+i.net).toFixed(3), (+i.basic).toFixed(3), 0,
+      (Number(i.allowances_total) + Number(i.additions)).toFixed(3), (Number(i.unpaid_deduction) + Number(i.sick_deduction) + Number(i.deductions)).toFixed(3), (+i.spf_employee).toFixed(3), ''];
+  });
+  const head = [['Employer CR-NO', 'Payer CR-NO', 'Payer Bank Short Name', 'Payer Account Number', 'Salary Year', 'Salary Month', 'Total Salaries', 'Number Of Records', 'Payment Type'],
+    [c.employer_cr || '', c.employer_cr || '', c.payer_bank || 'BMUSOMRX', c.payer_account || '', run.period.slice(0, 4), run.period.slice(5, 7), sum(items, 'net').toFixed(3), items.length, 'Salary'],
+    ['Employee ID Type', 'Employee ID', 'Reference Number', 'Employee Name', 'Employee BIC Code', 'Employee Account', 'Salary Frequency', 'Number Of Working Days', 'Net Salary', 'Basic Salary', 'Extra Hours', 'Extra Income', 'Deductions', 'Social Security Deductions', 'Notes / Comments']];
+  const text = [...head, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n');
+  const name = `SIF_${c.employer_cr || 'CR'}_${c.payer_bank || 'BMUSOMRX'}_${today().replace(/-/g, '')}_${run.period.slice(0, 7).replace('-', '')}.csv`;
+  const save = () => { downloadText(name, text); sb.rpc('log_event', {p_action: 'export', p_detail: 'wps sif ' + run.period.slice(0, 7)}); };
+  if (!problems.length) return save();
+  window._wpsSave = save;
+  drawer(drawerHead('Check before uploading') + `<p>The bank will reject lines with missing details. Fix these first, or download now and fix them in the file.</p>
+    <div class="msg bad">${problems.map(esc).join('<br>')}</div><div class="row"><button class="btn" data-a="wpsAnyway">Download anyway</button></div>`);
+}
+
+// Allowances on the employee drawer (HR Manager only).
+function allowancesBlock(empId, list){
+  const t = today();
+  const state = a => a.end_date && a.end_date < t ? pill('Ended ' + fmt(a.end_date), 'p-mute') : a.start_date > t ? pill('From ' + fmt(a.start_date), 'p-info') : a.end_date ? pill('Temporary to ' + fmt(a.end_date), 'p-warn') : pill('Ongoing', 'p-good');
+  return `<h2>Allowances</h2>${table(['Allowance', 'OMR / month', 'Status', ''], list.map(a => `<tr><td>${esc(a.name)}${a.in_spf ? '' : '<div class="muted small">Not in SPF wage</div>'}${a.note ? `<div class="muted small">${esc(a.note)}</div>` : ''}</td>
+    <td class="mono">${omr(a.amount)}</td><td>${state(a)}</td><td style="white-space:nowrap">${!a.end_date || a.end_date >= t ? `<button class="btn sm" data-a="endAllow" data-id="${a.id}" data-emp="${empId}">Stop</button>` : ''} <button class="btn sm danger" data-a="delAllow" data-id="${a.id}" data-emp="${empId}">Remove</button></td></tr>`), 'No allowances.')}
+    <form id="allowForm" data-emp="${empId}" style="margin:12px 0 18px"><div class="fgrid">
+      <div class="f"><label for="alName">Allowance</label><input id="alName" list="alNames" required placeholder="Housing"><datalist id="alNames">${['Housing', 'Transport', 'Phone', 'Site', 'Food', 'Acting', 'Overtime (fixed)'].map(x => `<option value="${x}">`).join('')}</datalist></div>
+      <div class="f"><label for="alAmt">OMR a month</label><input id="alAmt" type="number" step="0.001" min="0" required></div>
+      <div class="f"><label for="alStart">From</label><input id="alStart" type="date" value="${t.slice(0, 8)}01" required></div>
+      <div class="f"><label for="alEnd">To (leave empty if ongoing)</label><input id="alEnd" type="date"></div>
+      <div class="f full"><label class="row" style="gap:6px;font-weight:500"><input id="alSpf" type="checkbox" checked> Counts towards the SPF wage (most allowances do)</label></div></div>
+      <button class="btn">Add allowance</button></form>`;
+}
+async function saveAllowance(form){
+  const emp = form.dataset.emp;
+  await q(sb.from('pay_allowances').insert({employee_id: emp, name: $('alName').value.trim(), amount: Number($('alAmt').value), start_date: $('alStart').value, end_date: $('alEnd').value || null, in_spf: $('alSpf').checked}));
+  toast('Allowance added'); openEmployee(emp);
 }
 
 // ---- Leave rules
@@ -807,6 +1021,20 @@ const A = {
   newUser: el => userForm(el.dataset.id || null),
   resetPw: el => resetPw(el.dataset.id, el.dataset.u),
   setStatus: async el => { try { await q(sb.rpc('admin_update_user', {p_user: el.dataset.id, p_role: el.dataset.role, p_status: el.dataset.s})); toast(el.dataset.s === 'active' ? 'Login enabled' : 'Login disabled'); render(); } catch (e){ toast(errText(e)); } },
+  preparePay: () => preparePay(),
+  payStatus: async el => { if (el.dataset.s !== 'draft' && !el.dataset.confirm){ el.dataset.confirm = 1; el.textContent = el.dataset.s === 'paid' ? 'Confirm paid' : 'Confirm approve'; return; }
+    await q(sb.rpc('set_payroll_status', {p_run: Number(el.dataset.id), p_status: el.dataset.s})); toast({approved: 'Payroll approved. Employees can see their payslips.', paid: 'Marked as paid', draft: 'Back to draft'}[el.dataset.s]); render(); },
+  exportPay: el => exportPay(el.dataset.id),
+  exportWps: el => exportWps(el.dataset.id),
+  wpsAnyway: () => { window._wpsSave?.(); closeDrawer(); },
+  payslip: el => openPayslip(el.dataset.id),
+  printPayslip: el => printPayslip(el.dataset.id),
+  savePayCfg: () => savePayCfg(),
+  delAdj: async el => { await q(sb.from('payroll_adjustments').delete().eq('id', el.dataset.id)); await q(sb.rpc('prepare_payroll', {p_period: payMonth + '-01'})); toast('Removed and recalculated'); render(); },
+  endAllow: async el => { const t = today(), end = new Date(Date.UTC(+t.slice(0, 4), +t.slice(5, 7), 0)).toISOString().slice(0, 10);
+    const a = await q(sb.from('pay_allowances').select('start_date').eq('id', el.dataset.id).single());
+    await q(sb.from('pay_allowances').update({end_date: a.start_date > end ? a.start_date : end}).eq('id', el.dataset.id)); toast('Allowance stops at the end of this month'); openEmployee(el.dataset.emp); },
+  delAllow: async el => { if (!el.dataset.confirm){ el.dataset.confirm = 1; el.textContent = 'Confirm remove'; return; } await q(sb.from('pay_allowances').delete().eq('id', el.dataset.id)); toast('Allowance removed'); openEmployee(el.dataset.emp); },
   copy: async el => { try { await navigator.clipboard.writeText(el.dataset.text); toast('Copied'); } catch { toast('Select the text and copy it'); } }
 };
 document.addEventListener('click', ev => {
@@ -820,6 +1048,10 @@ document.addEventListener('submit', ev => {
   ev.preventDefault();
   const f = ev.target;
   ({loginForm: doLogin, pwForm: doChangePassword, leaveForm: submitLeave, empForm: () => saveEmployee(f), docForm: () => saveDoc(f), userForm: saveUser,
+    allowForm: () => saveAllowance(f).catch(e => toast(errText(e))),
+    adjForm: async () => { try { const run = await q(sb.from('payroll_runs').select('id').eq('period', payMonth + '-01').single());
+      await q(sb.from('payroll_adjustments').insert({run_id: run.id, employee_id: $('adjEmp').value, kind: $('adjKind').value, name: $('adjName').value.trim(), amount: Number($('adjAmt').value), created_by: S.user.id}));
+      await q(sb.rpc('prepare_payroll', {p_period: payMonth + '-01'})); toast('Added and recalculated'); render(); } catch (e){ toast(errText(e)); } },
     letterForm: async () => { try { await q(sb.rpc('request_letter', {p_type: $('ltType').value, p_addressed_to: $('ltTo').value, p_purpose: $('ltPurpose').value})); toast('Request sent to HR'); render(); } catch (e){ toast(errText(e)); } }
   })[f.id]?.();
 });
@@ -831,6 +1063,7 @@ document.addEventListener('change', ev => {
   const t = ev.target;
   if (['lfType', 'lfStart', 'lfEnd'].includes(t.id)) updateLeaveCalc().catch(e => toast(errText(e)));
   if (t.id === 'empShow'){ empFilter.show = t.value; render(); }
+  if (t.id === 'payMonth' && t.value){ payMonth = t.value; render(); }
   if (t.id === 'ufEmp') $('ufUser').value = t.selectedOptions[0]?.dataset.s || '';
   if (t.dataset.a2 === 'role') q(sb.rpc('admin_update_user', {p_user: t.dataset.id, p_role: t.value, p_status: 'active'})).then(() => { toast('Role saved'); render(); }).catch(e => toast(errText(e)));
 });
