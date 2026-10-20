@@ -23,6 +23,8 @@ const isHRM = () => role() === 'hr_manager';
 const canUsers = () => ['hr_manager', 'admin'].includes(role());
 const canRules = () => ['hr_manager', 'admin'].includes(role());
 const canEditEmp = () => isHR() || role() === 'admin';
+const canDocs = () => isHR() || role() === 'admin';
+const isExcuse = c => S.types.find(t => t.code === c)?.category === 'excuse';
 const ROLE_NAMES = {employee: 'Employee', hr_officer: 'HR Officer', hr_manager: 'HR Manager', admin: 'System Admin'};
 const STATUS_NAMES = {pending_manager: 'Waiting for manager', pending_hr: 'Waiting for HR', approved: 'Approved', rejected: 'Rejected', returned: 'Returned for changes', cancelled: 'Cancelled'};
 const DOC_TYPES = {passport: 'Passport', resident_card: 'Resident card', work_permit: 'Work permit', visa: 'Visa', civil_id: 'Civil ID', contract: 'Contract',
@@ -55,6 +57,7 @@ const ERRORS = {
   NO_EMPLOYEE_RECORD: () => 'Your login is not linked to an employee record. Ask HR to link it.',
   PAYROLL_LOCKED: () => 'This month is approved. Move it back to draft to change it.',
   PAYROLL_EMPTY: () => 'There are no payroll lines to approve. Prepare the payroll first.',
+  BAD_LEAVE_TYPE: () => 'This type is not available.',
   BAD_STATUS_CHANGE: () => 'That step is not possible from the current status.'
 };
 function errText(e){
@@ -202,12 +205,13 @@ async function boot(){
 }
 function navItems(){
   const n = [];
-  if (S.emp) n.push(['dashboard', 'Dashboard'], ['leave', 'My leave'], ['payslips', 'My payslips'], ['letters', 'My letters']);
-  if (S.emp && !isHR()) n.push(['mydocs', 'My documents']);
+  if (S.emp) n.push(['dashboard', 'Dashboard'], ['leave', 'My leave'], ['excuse', 'Absence excuse'], ['payslips', 'My payslips'], ['letters', 'My letters']);
+  if (S.emp && !canDocs()) n.push(['mydocs', 'My documents']);
   if (S.isManager || isHR()) n.push(['approvals', 'Approvals']);
   if (isHR() || role() === 'admin') n.push(['employees', 'Employees']);
   else if (S.isManager) n.push(['employees', 'My team']);
-  if (isHR()) n.push(['documents', 'Documents'], ['letterq', 'Letter requests'], ['reports', 'Reports']);
+  if (canDocs()) n.push(['documents', 'Documents']);
+  if (isHR()) n.push(['letterq', 'Letter requests'], ['reports', 'Reports']);
   if (isHRM()) n.push(['payroll', 'Payroll']);
   if (canRules()) n.push(['rules', 'Leave rules']);
   if (canUsers()) n.push(['users', 'User accounts'], ['audit', 'Audit log']);
@@ -268,7 +272,9 @@ V.dashboard = async () => {
       q(sb.from('documents').select('id, expiry_date').eq('employee_id', S.emp.id).not('expiry_date', 'is', null).lte('expiry_date', in90))
     ]);
     const b = bal[0] || {};
+    const last = (await q(sb.from('leave_requests').select('leave_type, start_date, end_date, days').eq('employee_id', S.emp.id).eq('status', 'approved').lte('start_date', t).order('start_date', {ascending: false}).limit(10))).find(r => !isExcuse(r.leave_type));
     tiles = `<div class="panel tile"><div class="k">Annual leave left</div><div class="v">${b.remaining ?? 0}</div><div class="n">of ${b.entitled ?? 0} days in ${year()}</div></div>
+      <div class="panel tile"><div class="k">Last leave</div><div class="v" style="font-size:20px">${last ? fmt(last.start_date) : 'None yet'}</div><div class="n">${last ? `${esc(typeName(last.leave_type))}, ${last.days} days to ${fmt(last.end_date)}` : 'No approved leave taken'}</div></div>
       <div class="panel tile"><div class="k">My pending requests</div><div class="v">${mine.filter(r => r.status.startsWith('pending')).length}</div><div class="n">waiting for approval</div></div>
       <div class="panel tile"><div class="k">My documents due</div><div class="v">${docs.length}</div><div class="n">expiring within 90 days</div></div>`;
     if (S.isManager) tiles += `<div class="panel tile"><div class="k">Waiting on you</div><div class="v">${S.pendingCount}</div><div class="n">leave requests to approve</div></div>`;
@@ -281,7 +287,7 @@ V.dashboard = async () => {
   }
   const name = (S.emp?.full_name || S.profile.username).split(' ')[0];
   const sub = S.emp ? `${esc(S.emp.job_title)}${S.emp.department_id ? ' · ' + esc(deptName(S.emp.department_id)) : ''}` : ROLE_NAMES[role()];
-  return header(`Welcome, ${esc(name)}`, sub) + `<div class="grid tiles">${tiles}</div>` + extra;
+  return header(`Welcome, ${esc(name)}`, sub, S.emp ? `<button class="btn" data-a="emp" data-id="${S.emp.id}">My details</button>` : '') + `<div class="grid tiles">${tiles}</div>` + extra;
 };
 function offTable(rows){
   return table(['Employee', 'Leave', 'Dates', 'Status'], rows.map(r => `<tr><td>${esc(r.employees?.full_name)}</td><td>${esc(typeName(r.leave_type))}</td><td class="mono">${fmt(r.start_date)} to ${fmt(r.end_date)}</td><td>${statusPill(r.status)}</td></tr>`), 'Nobody has leave booked.');
@@ -296,7 +302,7 @@ function requestTable(rows, withEmp){
 let draft = {type: 'annual', start: '', end: '', reason: ''};
 let leaveMsg = null;
 function eligibleTypes(e){
-  return S.types.filter(t => t.active && (t.gender === 'any' || t.gender === e.gender) && (t.religion === 'any' || t.religion === e.religion));
+  return S.types.filter(t => t.active && t.category !== 'excuse' && (t.gender === 'any' || t.gender === e.gender) && (t.religion === 'any' || t.religion === e.religion));
 }
 V.leave = async () => {
   const types = eligibleTypes(S.emp);
@@ -304,7 +310,7 @@ V.leave = async () => {
   const yearly = types.filter(t => t.per === 'year' && t.days != null);
   const [bals, mine] = await Promise.all([
     Promise.all(yearly.map(t => q(sb.rpc('leave_balance', {p_employee: S.emp.id, p_type: t.code, p_year: year()})).then(r => ({t, b: r[0]})))),
-    q(sb.from('leave_requests').select('*').eq('employee_id', S.emp.id).order('created_at', {ascending: false}))
+    q(sb.from('leave_requests').select('*').eq('employee_id', S.emp.id).order('created_at', {ascending: false})).then(r => r.filter(x => !isExcuse(x.leave_type)))
   ]);
   return header('My leave', `Balances for ${year()} under the Oman Labour Law`) + `
     <div class="panel" style="margin-bottom:16px"><h2>Balances</h2><div class="bal">${bals.map(({t, b}) => `<div><b>${b.remaining}</b><span>${esc(t.name)}: days left of ${b.entitled}${b.pending ? `, ${b.pending} pending` : ''}</span></div>`).join('')}</div></div>
@@ -349,6 +355,38 @@ async function submitLeave(){
   await render();
 }
 
+// ---- Absence excuse: for days already missed. Same approval path as leave, no balance used.
+let excMsg = null;
+V.excuse = async () => {
+  const types = S.types.filter(t => t.active && t.category === 'excuse');
+  const mine = (await q(sb.from('leave_requests').select('*').eq('employee_id', S.emp.id).order('created_at', {ascending: false}))).filter(r => isExcuse(r.leave_type));
+  const t0 = types[0];
+  return header('Absence excuse', 'Missed a working day? Send the reason and proof. It goes to your line manager, then HR.') + `<div class="grid two">
+    <div class="panel"><h2>New excuse</h2>${excMsg ? `<div class="msg ${excMsg.cls}">${esc(excMsg.text)}</div>` : ''}
+      <form id="excuseForm"><div class="fgrid">
+        <div class="f full"><label for="exType">Type of excuse</label><select id="exType">${types.map(t => `<option value="${t.code}">${esc(t.name)}</option>`).join('')}</select></div>
+        <div class="f"><label for="exStart">Day absent (from)</label><input id="exStart" type="date" value="${today()}" max="${today()}" required></div>
+        <div class="f"><label for="exEnd">To</label><input id="exEnd" type="date" value="${today()}" max="${today()}" required></div></div>
+        <div class="calc" id="exInfo">${excuseInfo(t0)}</div>
+        <div class="fgrid"><div class="f full"><label for="exReason">What happened</label><textarea id="exReason" rows="2" required></textarea></div>
+        <div class="f full"><label for="exAttach">Proof (PDF, JPG or PNG, up to 10 MB)</label><input id="exAttach" type="file" accept=".pdf,.jpg,.jpeg,.png"></div></div>
+        <button class="btn primary" id="exBtn">Send excuse</button></form>
+      <p class="muted small">Sick days with a medical certificate go under My leave as sick leave.</p></div>
+    <div class="panel"><h2>My excuses</h2>${requestTable(mine, false)}</div></div>`;
+};
+const excuseInfo = t => t ? `${t.needs_attachment ? '<b>Proof required.</b> ' : 'Proof optional. '}${esc(t.note)}` : 'HR has not set up any excuse types.';
+async function submitExcuse(){
+  const btn = $('exBtn'); btn.disabled = true;
+  try {
+    if (!$('exReason').value.trim()) throw new Error('Write what happened.');
+    const file = $('exAttach').files[0];
+    const path = file ? await upload(file, `${S.emp.id}/leave`) : null;
+    const id = await q(sb.rpc('submit_leave', {p_type: $('exType').value, p_start: $('exStart').value, p_end: $('exEnd').value, p_reason: $('exReason').value.trim(), p_attachment: path}));
+    excMsg = {cls: 'good', text: `LR-${id} was sent to your line manager.`};
+  } catch (e){ excMsg = {cls: 'bad', text: errText(e)}; }
+  await render();
+}
+
 async function openRequest(id){
   const r = await q(sb.from('leave_requests').select('*, employees(full_name, job_title, manager_id)').eq('id', id).single());
   const [acts, bal] = await Promise.all([
@@ -363,7 +401,7 @@ async function openRequest(id){
   const ACT = {submitted: 'Submitted', approved_by_manager: 'Approved by manager', approved_by_hr: 'Approved by HR', rejected: 'Rejected', returned: 'Returned for changes', cancelled: 'Cancelled'};
   drawer(drawerHead(`LR-${r.id}`) + `<p>${statusPill(r.status)}</p>
     <dl class="dl"><dt>Employee</dt><dd>${esc(r.employees?.full_name)} · ${esc(r.employees?.job_title)}</dd>
-    <dt>Leave</dt><dd>${esc(t.name)} (pay ${esc(t.pay_note)})</dd><dt>Dates</dt><dd class="mono">${fmt(r.start_date)} to ${fmt(r.end_date)}</dd>
+    <dt>${t.category === 'excuse' ? 'Excuse' : 'Leave'}</dt><dd>${esc(t.name)}${t.category === 'excuse' ? '' : ` (pay ${esc(t.pay_note)})`}</dd><dt>Dates</dt><dd class="mono">${fmt(r.start_date)} to ${fmt(r.end_date)}</dd>
     <dt>Days</dt><dd class="mono">${r.days} ${t.counts || ''}</dd>${b && b.remaining != null ? `<dt>Balance</dt><dd class="mono">${b.remaining} left of ${b.entitled} (this request included)</dd>` : ''}
     <dt>Reason</dt><dd>${esc(r.reason) || '<span class="muted">None given</span>'}</dd>
     ${r.attachment_path ? `<dt>Attachment</dt><dd><button class="btn sm" data-a="file" data-path="${esc(r.attachment_path)}">Open file</button></dd>` : ''}</dl>
@@ -422,7 +460,7 @@ V.employees = async () => {
 async function openEmployee(id){
   const e = await q(sb.from('employees').select('*').eq('id', id).single());
   const [docs, mgr, pay, prof, bal, allows] = await Promise.all([
-    isHR() || id === S.emp?.id ? q(sb.from('documents').select('*').eq('employee_id', id).order('expiry_date')) : Promise.resolve([]),
+    canDocs() || id === S.emp?.id ? q(sb.from('documents').select('*').eq('employee_id', id).order('expiry_date')) : Promise.resolve([]),
     e.manager_id ? q(sb.from('employees').select('full_name').eq('id', e.manager_id).maybeSingle()) : Promise.resolve(null),
     isHRM() ? q(sb.from('employee_pay').select('*').eq('employee_id', id).maybeSingle()) : Promise.resolve(null),
     isHR() || canUsers() ? q(sb.from('profiles').select('username, role, status').eq('employee_id', id).maybeSingle()) : Promise.resolve(null),
@@ -449,15 +487,15 @@ async function openEmployee(id){
     ${pay ? `<dt>Basic salary</dt><dd class="mono">OMR ${omr(pay.basic_salary)}</dd><dt>Allowances now</dt><dd class="mono">OMR ${omr(allowNow)}</dd><dt>Gross salary</dt><dd class="mono"><b>OMR ${omr(Number(pay.basic_salary) + allowNow)}</b></dd>${pay.bank_iban ? `<dt>Bank account</dt><dd class="mono">${esc(pay.bank_iban)}${pay.bank_bic ? ' · ' + esc(pay.bank_bic) : ''}</dd>` : ''}` : ''}
     ${isHR() || isHRM() ? `<dt>End of service</dt><dd class="small">${eos}</dd>` : ''}
     ${isHR() || canUsers() ? `<dt>Login</dt><dd>${prof ? `${esc(prof.username)} · ${ROLE_NAMES[prof.role]}${prof.status === 'disabled' ? ' · disabled' : ''}` : '<span class="muted">No login yet</span>'}</dd>` : ''}</dl>
-    ${canEditEmp() ? `<div class="row" style="margin-bottom:18px"><button class="btn primary" data-a="editEmp" data-id="${e.id}">Edit details</button>${isHR() ? `<button class="btn" data-a="newDoc" data-id="${e.id}">Upload document</button>` : ''}</div>` : ''}
+    ${canEditEmp() ? `<div class="row" style="margin-bottom:18px"><button class="btn primary" data-a="editEmp" data-id="${e.id}">Edit details</button>${canDocs() ? `<button class="btn" data-a="newDoc" data-id="${e.id}">Upload document</button>` : ''}</div>` : ''}
     ${isHRM() ? allowancesBlock(e.id, allows) : ''}
-    ${isHR() || id === S.emp?.id ? `<h2>Documents</h2>${docsTable(docs, false)}` : ''}`);
+    ${canDocs() || id === S.emp?.id ? `<h2>Documents</h2>${docsTable(docs, false)}` : ''}`);
 }
 function docsTable(docs, withEmp){
   return table([...(withEmp ? ['Employee'] : []), 'Document', 'Number', 'Expiry', 'Status', ''], docs.map(d => { const s = docState(d.expiry_date); return `<tr>
     ${withEmp ? `<td><a href="#" data-a="emp" data-id="${d.employee_id}">${esc(d.employees?.full_name)}</a></td>` : ''}<td>${DOC_TYPES[d.doc_type]}${d.notes ? `<div class="muted small">${esc(d.notes)}</div>` : ''}</td>
     <td class="mono">${esc(d.doc_number)}</td><td class="mono">${fmt(d.expiry_date)}</td><td>${pill(s.label, s.cls)}</td>
-    <td style="white-space:nowrap">${d.file_path ? `<button class="btn sm" data-a="file" data-path="${esc(d.file_path)}">Open</button>` : ''}${isHR() ? ` <button class="btn sm danger" data-a="delDoc" data-id="${d.id}">Remove</button>` : ''}</td></tr>`; }), 'No documents uploaded.');
+    <td style="white-space:nowrap">${d.file_path ? `<button class="btn sm" data-a="file" data-path="${esc(d.file_path)}">Open</button>` : ''}${canDocs() ? ` <button class="btn sm danger" data-a="delDoc" data-id="${d.id}">Remove</button>` : ''}</td></tr>`; }), 'No documents uploaded.');
 }
 async function employeeForm(id){
   const e = id ? await q(sb.from('employees').select('*').eq('id', id).single()) : {nat_type: 'omani', gender: 'male', religion: 'muslim', status: 'active', contract_type: 'unlimited', join_date: today()};
@@ -579,7 +617,7 @@ async function docsView(own){
   if (docFilter === 'd30') docs = docs.filter(d => d.expiry_date >= t && daysUntil(d.expiry_date) <= 30);
   if (docFilter === 'd90') docs = docs.filter(d => d.expiry_date && daysUntil(d.expiry_date) > 30 && daysUntil(d.expiry_date) <= 90);
   const chip = (k, label) => `<button class="btn sm ${docFilter === k ? 'primary' : ''}" data-a="docFilter" data-v="${k}">${label}</button>`;
-  return header(own ? 'My documents' : 'Documents', 'Passports, resident cards, work permits, civil IDs and contracts, soonest expiry first', `<button class="btn primary" data-a="newDoc" data-id="${own ? S.emp.id : ''}">Upload document</button>`) + `<div class="panel">
+  return header(own ? 'My documents' : 'Documents', own ? 'Your documents on file with HR. To add or replace one, send it to HR.' : 'Passports, resident cards, work permits, civil IDs and contracts, soonest expiry first', own ? '' : `<button class="btn primary" data-a="newDoc">Upload document</button>`) + `<div class="panel">
     <div class="row" style="margin-bottom:12px">${chip('all', 'All')}${chip('expired', `Expired (${counts.expired})`)}${chip('d30', `Within 30 days (${counts.d30})`)}${chip('d90', `31 to 90 days (${counts.d90})`)}</div>
     ${docsTable(docs, !own)}</div>`;
 }
@@ -1047,7 +1085,7 @@ document.addEventListener('keydown', ev => { if (ev.key === 'Escape') closeDrawe
 document.addEventListener('submit', ev => {
   ev.preventDefault();
   const f = ev.target;
-  ({loginForm: doLogin, pwForm: doChangePassword, leaveForm: submitLeave, empForm: () => saveEmployee(f), docForm: () => saveDoc(f), userForm: saveUser,
+  ({loginForm: doLogin, pwForm: doChangePassword, leaveForm: submitLeave, excuseForm: submitExcuse, empForm: () => saveEmployee(f), docForm: () => saveDoc(f), userForm: saveUser,
     allowForm: () => saveAllowance(f).catch(e => toast(errText(e))),
     adjForm: async () => { try { const run = await q(sb.from('payroll_runs').select('id').eq('period', payMonth + '-01').single());
       await q(sb.from('payroll_adjustments').insert({run_id: run.id, employee_id: $('adjEmp').value, kind: $('adjKind').value, name: $('adjName').value.trim(), amount: Number($('adjAmt').value), created_by: S.user.id}));
@@ -1062,6 +1100,7 @@ document.addEventListener('input', ev => {
 document.addEventListener('change', ev => {
   const t = ev.target;
   if (['lfType', 'lfStart', 'lfEnd'].includes(t.id)) updateLeaveCalc().catch(e => toast(errText(e)));
+  if (t.id === 'exType') $('exInfo').innerHTML = excuseInfo(S.types.find(x => x.code === t.value));
   if (t.id === 'empShow'){ empFilter.show = t.value; render(); }
   if (t.id === 'payMonth' && t.value){ payMonth = t.value; render(); }
   if (t.id === 'ufEmp') $('ufUser').value = t.selectedOptions[0]?.dataset.s || '';

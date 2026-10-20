@@ -8,11 +8,11 @@ The website is plain HTML and JavaScript in `web/`. Data, sign-in and files live
 
 | Role | Can do |
 |---|---|
-| Employee | See own profile, leave balances, documents and payslips; request leave and letters; upload own documents. |
+| Employee | See own details, leave balances, last leave, documents and payslips (view only); request leave, absence excuses and letters. Cannot add or remove documents. |
 | Line manager | Anyone with direct reports. Approves their team's leave first and sees team leave. No special role needed. |
 | HR Officer | All employee records and documents, final leave approval, letters, reports, holidays. Cannot see salaries. |
 | HR Manager | Everything HR Officer does, plus salaries, allowances, payroll, leave rules, user accounts and the audit log. |
-| System Admin | Company setup: employee records, departments, leave rules, user accounts, audit log. Cannot see salaries or documents. |
+| System Admin | Company setup: employee records, documents, departments, leave rules, user accounts, audit log. Cannot see salaries. |
 
 There is no self sign-up. HR Manager or System Admin creates each login on **User accounts** and links it to one employee. The employee must set a new password at first sign-in. When an employee's status is set to Resigned or Terminated, their login is disabled at once; the record is kept.
 
@@ -32,7 +32,7 @@ There is no self sign-up. HR Manager or System Admin creates each login on **Use
 
 ## Setting up a new database
 
-Run `supabase/schema.sql`, then `supabase/payroll.sql`, once in **SQL Editor** on an empty project. Then create the first account there:
+Run `supabase/schema.sql`, then `supabase/payroll.sql` and `supabase/excuses.sql`, once in **SQL Editor** on an empty project. Then create the first account there:
 
 ```sql
 select public.create_user_account('mohamed', 'a-temporary-password', 'admin', null, 'staff.carbon.local');
@@ -54,6 +54,8 @@ select public.create_user_account('mohamed', 'a-temporary-password', 'admin', nu
 | Hajj | 15, once | After 1 year of service, Muslims |
 | Accompanying a sick relative | 15 a year | Check whether it applies to expats |
 | Unpaid | As approved | |
+
+**Absence excuses** (medical appointment, official errand, family emergency, transport, other) are for working days already missed. They follow the leave route (line manager, then HR), use no balance and are paid. HR can change which ones need proof on **Leave rules**.
 
 Weekly rest days default to Friday and Saturday. HR adds public holidays on **Leave rules**. All values should be checked against the decree text before go-live.
 
