@@ -656,8 +656,10 @@ async function docForm(empId){
     ${!empId ? `<div class="f full"><label for="dfEmp">Employee</label><select id="dfEmp" required>${emps.map(e => `<option value="${e.id}">${esc(e.full_name)}</option>`).join('')}</select></div>` : ''}
     <div class="f"><label for="dfType">Document</label><select id="dfType">${Object.entries(DOC_TYPES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
     <div class="f"><label for="dfNo">Number</label><input id="dfNo"></div>
-    <div class="f"><label for="dfIssue">Issue date</label><input id="dfIssue" type="date"></div>
-    <div class="f"><label for="dfExp">Expiry date</label><input id="dfExp" type="date"></div>
+    <div class="f"><label for="dfIssue">Issue date</label><input id="dfIssue" type="date">
+      <label class="row small" style="gap:6px;font-weight:500"><input type="checkbox" data-off="dfIssue"> No issue date on this document</label></div>
+    <div class="f"><label for="dfExp">Expiry date</label><input id="dfExp" type="date">
+      <label class="row small" style="gap:6px;font-weight:500"><input type="checkbox" data-off="dfExp"> Does not expire</label></div>
     <div class="f full"><label for="dfNotes">Notes</label><input id="dfNotes"></div>
     <div class="f full"><label for="dfFile">File (PDF, JPG or PNG, up to 10 MB)</label><input id="dfFile" type="file" accept=".pdf,.jpg,.jpeg,.png"></div></div>
     <div id="dfErr" class="msg bad" hidden></div><button class="btn primary" id="dfBtn">Save document</button></form>`);
@@ -1127,6 +1129,7 @@ document.addEventListener('input', ev => {
 document.addEventListener('change', ev => {
   const t = ev.target;
   if (['lfType', 'lfStart', 'lfEnd'].includes(t.id)) updateLeaveCalc().catch(e => toast(errText(e)));
+  if (t.dataset.off){ const f = $(t.dataset.off); f.disabled = t.checked; if (t.checked) f.value = ''; }
   if (t.id === 'exType') $('exInfo').innerHTML = excuseInfo(S.types.find(x => x.code === t.value));
   if (t.id === 'empShow'){ empFilter.show = t.value; render(); }
   if (t.id === 'payMonth' && t.value){ payMonth = t.value; render(); }
