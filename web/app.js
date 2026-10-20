@@ -552,6 +552,9 @@ function docsTable(docs, withEmp){
 async function employeeForm(id){
   const e = id ? await q(sb.from('employees').select('*').eq('id', id).single()) : {nat_type: 'omani', gender: 'male', religion: 'muslim', status: 'active', contract_type: 'unlimited', join_date: today()};
   const pay = id && isHRM() ? await q(sb.from('employee_pay').select('*').eq('employee_id', id).maybeSingle()) : null;
+  const allows = id && isHRM() ? await q(sb.from('pay_allowances').select('*').eq('employee_id', id).is('end_date', null)) : [];
+  const allowOf = n => allows.find(a => a.name === n)?.amount ?? '';
+  const others = allows.filter(a => !MAIN_ALLOWANCES.includes(a.name));
   const all = await q(sb.from('employees').select('id, full_name').not('status', 'in', '(resigned,terminated)').order('full_name'));
   const opt = (v, cur, label) => `<option value="${esc(v)}" ${String(v) === String(cur ?? '') ? 'selected' : ''}>${esc(label)}</option>`;
   const inp = (k, label, type = 'text', extra = '') => `<div class="f"><label for="ef_${k}">${label}</label><input id="ef_${k}" type="${type}" value="${esc(e[k] ?? '')}" ${extra}></div>`;
@@ -575,14 +578,35 @@ async function employeeForm(id){
       <div class="f full"><label for="ef_emergency_contact">Emergency contact</label><input id="ef_emergency_contact" value="${esc(e.emergency_contact || '')}"></div>
       <div class="f"><label for="ef_status">Status</label><select id="ef_status">${Object.entries(EMP_STATUS).map(([k, v]) => opt(k, e.status, v)).join('')}</select></div>
       ${inp('end_date', 'Last working day', 'date')}
-      ${isHRM() ? `<div class="f"><label for="pf_basic">Basic salary (OMR)</label><input id="pf_basic" type="number" step="0.001" min="0" value="${pay?.basic_salary ?? ''}"></div>
+      ${isHRM() ? `<h2 class="full" style="margin:10px 0 0;padding-top:14px;border-top:1px solid var(--line)">Salary</h2>
+        <div class="f"><label for="pf_basic">Basic salary (OMR a month)</label><input id="pf_basic" class="payf" type="number" step="0.001" min="0" value="${pay?.basic_salary ?? ''}"></div>
+        ${MAIN_ALLOWANCES.map((n, i) => `<div class="f"><label for="pf_al${i}">${n} allowance (OMR)</label><input id="pf_al${i}" class="payf" type="number" step="0.001" min="0" value="${allowOf(n)}"></div>`).join('')}
+        <div class="calc full" id="pfGross" data-other="${others.reduce((t, a) => t + Number(a.amount), 0)}" style="margin:0"></div>
         <div class="f"><label for="pf_bic">Employee's bank code (BIC)</label><input id="pf_bic" value="${esc(pay?.bank_bic || '')}" placeholder="BMUSOMRX for Bank Muscat"></div>
-        <div class="f full"><label for="pf_iban">Bank account or IBAN</label><input id="pf_iban" value="${esc(pay?.bank_iban || '')}"></div>
-        <p class="muted small full" style="margin:0">Allowances, including temporary ones, are added on the employee page after saving.</p>` : ''}
+        <div class="f"><label for="pf_iban">Bank account or IBAN</label><input id="pf_iban" value="${esc(pay?.bank_iban || '')}"></div>
+        <p class="muted small full" style="margin:0">Temporary allowances (site, acting, project) are added on the employee page and stop by themselves on their end date.</p>` : ''}
     </div>
     <p class="muted small">Setting the status to Resigned or Terminated disables the employee's login at once. The record is kept.</p>
     <div id="efErr" class="msg bad" hidden></div>
     <button class="btn primary" id="efBtn">${id ? 'Save changes' : 'Add employee'}</button></form>`);
+  if (isHRM()) updateGross();
+}
+const MAIN_ALLOWANCES = ['Housing', 'Transport', 'Other'];
+function updateGross(){
+  const el = $('pfGross'); if (!el) return;
+  const basic = Number($('pf_basic').value || 0), al = MAIN_ALLOWANCES.reduce((t, _, i) => t + Number($('pf_al' + i).value || 0), 0), other = Number(el.dataset.other || 0);
+  el.innerHTML = `Gross salary <b class="mono">OMR ${omr(basic + al + other)}</b> a month · basic ${omr(basic)} + allowances ${omr(al + other)}${other ? ` (includes ${omr(other)} of other ongoing allowances)` : ''}`;
+}
+// Keeps allowance history: a changed amount ends the old line yesterday and starts a new one today.
+async function saveMainAllowances(empId, isNew, joinDate){
+  const current = await q(sb.from('pay_allowances').select('*').eq('employee_id', empId).is('end_date', null));
+  const start = isNew ? joinDate : today(), yesterday = addDays(today(), -1);
+  for (const [i, name] of MAIN_ALLOWANCES.entries()){
+    const amt = Number($('pf_al' + i).value || 0), cur = current.find(a => a.name === name);
+    if (cur && Number(cur.amount) === amt) continue;
+    if (cur) await q(sb.from('pay_allowances').update({end_date: cur.start_date > yesterday ? cur.start_date : yesterday}).eq('id', cur.id));
+    if (amt > 0) await q(sb.from('pay_allowances').insert({employee_id: empId, name, amount: amt, start_date: start > today() || isNew ? start : today(), in_spf: true}));
+  }
 }
 async function saveEmployee(form){
   const id = form.dataset.id || null;
@@ -608,6 +632,7 @@ async function saveEmployee(form){
     if (isHRM() && ($('pf_basic').value !== '' || $('pf_bic').value !== '' || $('pf_iban').value !== '')){
       await q(sb.from('employee_pay').upsert({employee_id: saved.id, basic_salary: Number($('pf_basic').value || 0), bank_bic: $('pf_bic').value.trim().toUpperCase(), bank_iban: $('pf_iban').value.trim(), updated_at: new Date().toISOString()}));
     }
+    if (isHRM()) await saveMainAllowances(saved.id, !id, saved.join_date);
     toast(id ? 'Employee saved' : 'Employee added');
     openEmployee(saved.id);
   } catch (e){ const el = $('efErr'); el.textContent = errText(e); el.hidden = false; $('efBtn').disabled = false; }
@@ -1363,6 +1388,7 @@ document.addEventListener('submit', ev => {
 });
 let searchTimer;
 document.addEventListener('input', ev => {
+  if (ev.target.classList?.contains('payf')) updateGross();
   if (ev.target.id === 'docQ'){ clearTimeout(searchTimer); searchTimer = setTimeout(async () => { docQ = ev.target.value; await render(); const s = $('docQ'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }, 250); }
   if (ev.target.id === 'empQ'){ clearTimeout(searchTimer); searchTimer = setTimeout(async () => { empFilter.q = ev.target.value; await render(); const s = $('empQ'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }, 250); }
 });
