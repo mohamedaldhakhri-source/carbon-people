@@ -317,7 +317,10 @@ V.dashboard = async () => {
   }
   const name = (S.emp?.full_name || S.profile.username).split(' ')[0];
   const sub = S.emp ? `${esc(S.emp.job_title)}${S.emp.department_id ? ' · ' + esc(deptName(S.emp.department_id)) : ''}` : ROLE_NAMES[role()];
-  return header(`Welcome, ${esc(name)}`, sub, S.emp ? `<button class="btn" data-a="emp" data-id="${S.emp.id}">My details</button>` : '') + `<div class="grid tiles">${tiles}</div>` + extra;
+  const now = new Date(), greg = now.toLocaleDateString('en-GB', {weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Muscat'});
+  let hijri = ''; try { hijri = now.toLocaleDateString('en-GB-u-ca-islamic-umalqura', {day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Muscat'}); } catch {}
+  const kicker = `<div class="kicker"><span>${greg}</span>${hijri ? `<span class="muted">${esc(hijri)}</span>` : ''}</div>`;
+  return kicker + header(`Welcome, ${esc(name)}`, sub, S.emp ? `<button class="btn" data-a="emp" data-id="${S.emp.id}">My details</button>` : '') + `<div class="grid tiles">${tiles}</div>` + extra;
 };
 function offTable(rows){
   return table(['Employee', 'Leave', 'Dates', 'Status'], rows.map(r => `<tr><td>${esc(r.employees?.full_name)}</td><td>${esc(typeName(r.leave_type))}</td><td class="mono">${fmt(r.start_date)} to ${fmt(r.end_date)}</td><td>${statusPill(r.status)}</td></tr>`), 'Nobody has leave booked.');
