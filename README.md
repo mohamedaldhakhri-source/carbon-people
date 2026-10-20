@@ -32,7 +32,7 @@ There is no self sign-up. HR Manager or System Admin creates each login on **Use
 
 ## Setting up a new database
 
-Run `supabase/schema.sql`, then `supabase/payroll.sql` and `supabase/excuses.sql`, once in **SQL Editor** on an empty project. Then create the first account there:
+Run `supabase/schema.sql`, then `supabase/payroll.sql`, `supabase/excuses.sql` and `supabase/attendance.sql`, once in **SQL Editor** on an empty project. Then create the first account there:
 
 ```sql
 select public.create_user_account('mohamed', 'a-temporary-password', 'admin', null, 'staff.carbon.local');
@@ -58,6 +58,13 @@ select public.create_user_account('mohamed', 'a-temporary-password', 'admin', nu
 **Absence excuses** (medical appointment, official errand, family emergency, transport, other) are for working days already missed. They follow the leave route (line manager, then HR), use no balance and are paid. HR can change which ones need proof on **Leave rules**.
 
 Weekly rest days default to Friday and Saturday. HR adds public holidays on **Leave rules**. All values should be checked against the decree text before go-live.
+
+## Attendance
+
+- Each employee's number on the fingerprint device goes in **Fingerprint device no.** on their record.
+- HR or the System Admin exports the attendance log from the device software (Excel, CSV, or the device's attlog text file) and uses **Attendance > Import from fingerprint device**. Columns are detected and can be changed; punches already imported are skipped.
+- A day is Present, Late (first fingerprint after the start time plus grace), Absent, on leave or excused, a rest day or a public holiday. Days the log has not been imported for show "No device data yet" instead of Absent.
+- Employees see **My attendance** and can send an absence excuse straight from an absent day. Line managers see their team's day; HR sees everyone.
 
 ## Payroll
 

@@ -209,9 +209,10 @@ async function boot(){
 }
 function navItems(){
   const n = [];
-  if (S.emp) n.push(['dashboard', 'Dashboard'], ['leave', 'My leave'], ['excuse', 'Absence excuse'], ['payslips', 'My payslips'], ['letters', 'My letters']);
+  if (S.emp) n.push(['dashboard', 'Dashboard'], ['attendance', 'My attendance'], ['leave', 'My leave'], ['excuse', 'Absence excuse'], ['payslips', 'My payslips'], ['letters', 'My letters']);
   if (S.emp && !canDocs()) n.push(['mydocs', 'My documents']);
   if (S.isManager || isHR()) n.push(['approvals', 'Approvals']);
+  if (isHR() || role() === 'admin') n.push(['attteam', 'Attendance']); else if (S.isManager) n.push(['attteam', 'Team attendance']);
   if (isHR() || role() === 'admin') n.push(['employees', 'Employees']);
   else if (S.isManager) n.push(['employees', 'My team']);
   if (canDocs()) n.push(['documents', 'Documents']);
@@ -249,7 +250,9 @@ const ICONS = {
   audit: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5M12 7v5l4 2"/>'
 };
 ICONS.documents = ICONS.mydocs;
-const NAV_GROUP = {dashboard: 'Me', leave: 'Me', excuse: 'Me', payslips: 'Me', letters: 'Me', mydocs: 'Me', approvals: 'Team', employees: 'Team',
+ICONS.attendance = '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>';
+ICONS.attteam = '<path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/>';
+const NAV_GROUP = {attendance: 'Me', attteam: 'Team', dashboard: 'Me', leave: 'Me', excuse: 'Me', payslips: 'Me', letters: 'Me', mydocs: 'Me', approvals: 'Team', employees: 'Team',
   documents: 'HR', letterq: 'HR', reports: 'HR', payroll: 'HR', rules: 'Settings', users: 'Settings', audit: 'Settings'};
 function renderNav(){
   let last = '';
@@ -392,8 +395,8 @@ V.excuse = async () => {
     <div class="panel"><h2>New excuse</h2>${excMsg ? `<div class="msg ${excMsg.cls}">${esc(excMsg.text)}</div>` : ''}
       <form id="excuseForm"><div class="fgrid">
         <div class="f full"><label for="exType">Type of excuse</label><select id="exType">${types.map(t => `<option value="${t.code}">${esc(t.name)}</option>`).join('')}</select></div>
-        <div class="f"><label for="exStart">Day absent (from)</label><input id="exStart" type="date" value="${today()}" max="${today()}" required></div>
-        <div class="f"><label for="exEnd">To</label><input id="exEnd" type="date" value="${today()}" max="${today()}" required></div></div>
+        <div class="f"><label for="exStart">Day absent (from)</label><input id="exStart" type="date" value="${excPrefill || today()}" max="${today()}" required></div>
+        <div class="f"><label for="exEnd">To</label><input id="exEnd" type="date" value="${excPrefill || today()}" max="${today()}" required></div></div>
         <div class="calc" id="exInfo">${excuseInfo(t0)}</div>
         <div class="fgrid"><div class="f full"><label for="exReason">What happened</label><textarea id="exReason" rows="2" required></textarea></div>
         <div class="f full"><label for="exAttach">Proof (PDF, JPG or PNG, up to 10 MB)</label><input id="exAttach" type="file" accept=".pdf,.jpg,.jpeg,.png"></div></div>
@@ -409,7 +412,7 @@ async function submitExcuse(){
     const file = $('exAttach').files[0];
     const path = file ? await upload(file, `${S.emp.id}/leave`) : null;
     const id = await q(sb.rpc('submit_leave', {p_type: $('exType').value, p_start: $('exStart').value, p_end: $('exEnd').value, p_reason: $('exReason').value.trim(), p_attachment: path}));
-    excMsg = {cls: 'good', text: `LR-${id} was sent to your line manager.`};
+    excMsg = {cls: 'good', text: `LR-${id} was sent to your line manager.`}; excPrefill = null;
   } catch (e){ excMsg = {cls: 'bad', text: errText(e)}; }
   await render();
 }
@@ -502,6 +505,7 @@ V.profile = async () => {
     isHRM() ? q(sb.from('pay_allowances').select('*').eq('employee_id', id).order('start_date', {ascending: false})) : Promise.resolve([]),
     q(sb.from('leave_requests').select('*').eq('employee_id', id).order('start_date', {ascending: false}).limit(12)).catch(() => [])
   ]);
+  const att = await attendanceMonth(e, today().slice(0, 7)).catch(() => []);
   const allowNow = allows.filter(a => a.start_date <= today() && (!a.end_date || a.end_date >= today())).reduce((s, a) => s + Number(a.amount), 0);
   const months = (() => { const a = dt(e.join_date), b = dt(e.end_date || today()); return (b.getUTCFullYear() - a.getUTCFullYear()) * 12 + b.getUTCMonth() - a.getUTCMonth() - (b.getUTCDate() < a.getUTCDate() ? 1 : 0); })();
   const b = bal[0];
@@ -522,6 +526,7 @@ V.profile = async () => {
     ${e.probation_end ? `<dt>Probation ends</dt><dd class="mono">${fmt(e.probation_end)}</dd>` : ''}
     <dt>Contract</dt><dd>${e.contract_type === 'fixed' ? 'Fixed term' + (e.contract_end ? ' to ' + fmt(e.contract_end) : '') : 'Unlimited'}</dd>
     ${e.work_location ? `<dt>Work location</dt><dd>${esc(e.work_location)}</dd>` : ''}
+    <dt>Fingerprint no.</dt><dd class="mono">${e.device_user_id ? esc(e.device_user_id) : '<span class="muted">Not set</span>'}</dd>
     ${e.email ? `<dt>Email</dt><dd>${esc(e.email)}</dd>` : ''}${e.phone ? `<dt>Phone</dt><dd>${esc(e.phone)}</dd>` : ''}
     ${e.emergency_contact ? `<dt>Emergency</dt><dd>${esc(e.emergency_contact)}</dd>` : ''}
     ${isHR() || isHRM() ? `<dt>End of service</dt><dd class="small">${eos}</dd>` : ''}
@@ -534,8 +539,9 @@ V.profile = async () => {
   const payPanel = isHRM() ? `<div class="panel"><h2>Pay</h2>${pay ? `<div class="bal" style="margin-bottom:16px"><div><b>${omr(pay.basic_salary)}</b><span>Basic salary (OMR)</span></div><div><b>${omr(allowNow)}</b><span>Allowances now (OMR)</span></div><div><b>${omr(Number(pay.basic_salary) + allowNow)}</b><span>Gross salary (OMR)</span></div></div>
       ${pay.bank_iban ? `<p class="small muted" style="margin:-4px 0 14px">Bank account <span class="mono">${esc(pay.bank_iban)}</span>${pay.bank_bic ? ' · ' + esc(pay.bank_bic) : ''}</p>` : '<p class="msg bad">No bank account. Add it with Edit details.</p>'}` : '<p class="msg bad">No basic salary yet. Add it with Edit details.</p>'}
     ${allowancesBlock(e.id, allows)}</div>` : '';
+  const attPanel = `<div class="panel"><h2>Attendance this month</h2>${attTable(att.slice(0, 10), false)}</div>`;
   return header(esc(e.full_name), sub, actions) + `<div class="grid two" style="align-items:start">${details}${docPanel || leavePanel}</div>
-    ${docPanel ? `<div style="margin-top:18px">${leavePanel}</div>` : ''}${payPanel ? `<div style="margin-top:18px">${payPanel}</div>` : ''}`;
+    ${docPanel ? `<div class="grid two" style="align-items:start;margin-top:18px">${leavePanel}${attPanel}</div>` : `<div style="margin-top:18px">${attPanel}</div>`}${payPanel ? `<div style="margin-top:18px">${payPanel}</div>` : ''}`;
 };
 function docsTable(docs, withEmp){
   return table([...(withEmp ? ['Employee'] : []), 'Document', 'Number', 'Expiry', 'Status', ''], docs.map(d => { const s = docState(d.expiry_date); return `<tr>
@@ -564,7 +570,7 @@ async function employeeForm(id){
       <div class="f"><label for="ef_manager_id">Line manager</label><select id="ef_manager_id">${opt('', e.manager_id, 'None')}${all.filter(x => x.id !== id).map(x => opt(x.id, e.manager_id, x.full_name)).join('')}</select></div>
       ${inp('join_date', 'Join date', 'date', 'required')}${inp('probation_end', 'Probation ends', 'date')}
       <div class="f"><label for="ef_contract_type">Contract</label><select id="ef_contract_type">${opt('unlimited', e.contract_type, 'Unlimited')}${opt('fixed', e.contract_type, 'Fixed term')}</select></div>
-      ${inp('contract_end', 'Contract ends', 'date')}${inp('work_location', 'Work location')}
+      ${inp('contract_end', 'Contract ends', 'date')}${inp('work_location', 'Work location')}${inp('device_user_id', 'Fingerprint device no.')}
       ${inp('email', 'Email', 'email')}${inp('phone', 'Phone', 'tel')}
       <div class="f full"><label for="ef_emergency_contact">Emergency contact</label><input id="ef_emergency_contact" value="${esc(e.emergency_contact || '')}"></div>
       <div class="f"><label for="ef_status">Status</label><select id="ef_status">${Object.entries(EMP_STATUS).map(([k, v]) => opt(k, e.status, v)).join('')}</select></div>
@@ -594,7 +600,7 @@ async function saveEmployee(form){
     const row = {full_name: g('full_name').trim(), nat_type: g('nat_type'), nationality: g('nationality').trim(), gender: g('gender'), religion: g('religion'),
       date_of_birth: nul(g('date_of_birth')), marital_status: g('marital_status'), department_id: nul(dept), job_title: g('job_title').trim(), manager_id: nul(g('manager_id')),
       join_date: g('join_date'), probation_end: nul(g('probation_end')), contract_type: g('contract_type'), contract_end: nul(g('contract_end')),
-      work_location: g('work_location').trim(), email: g('email').trim(), phone: g('phone').trim(), emergency_contact: g('emergency_contact').trim(),
+      work_location: g('work_location').trim(), device_user_id: nul(g('device_user_id').trim()), email: g('email').trim(), phone: g('phone').trim(), emergency_contact: g('emergency_contact').trim(),
       status: g('status'), end_date: nul(g('end_date'))};
     if (id && g('employee_no').trim()) row.employee_no = g('employee_no').trim();
     if (['resigned', 'terminated'].includes(row.status) && !row.end_date) row.end_date = today();
@@ -607,7 +613,7 @@ async function saveEmployee(form){
   } catch (e){ const el = $('efErr'); el.textContent = errText(e); el.hidden = false; $('efBtn').disabled = false; }
 }
 
-const IMPORT_COLS = ['employee_no', 'full_name', 'nat_type', 'nationality', 'gender', 'religion', 'date_of_birth', 'department', 'job_title', 'manager_employee_no', 'join_date', 'probation_end', 'contract_type', 'contract_end', 'email', 'phone'];
+const IMPORT_COLS = ['employee_no', 'full_name', 'nat_type', 'nationality', 'gender', 'religion', 'date_of_birth', 'department', 'job_title', 'manager_employee_no', 'join_date', 'probation_end', 'contract_type', 'contract_end', 'email', 'phone', 'device_user_id'];
 function importForm(){
   drawer(drawerHead('Import employees') + `<p>Save your Excel sheet as <b>CSV</b> with these column headings in the first row, then choose the file. Leave <span class="mono">employee_no</span> empty to number employees automatically.</p>
     <p class="mono small" style="background:var(--sunk);padding:8px;border-radius:6px;overflow-wrap:anywhere">${IMPORT_COLS.join(', ')}</p>
@@ -635,7 +641,7 @@ async function runImport(){
       const row = {full_name: r.full_name, nat_type: r.nat_type.toLowerCase(), nationality: r.nationality || '', gender: r.gender.toLowerCase(), religion: (r.religion || 'muslim').toLowerCase().replace('-', '_'),
         date_of_birth: r.date_of_birth || null, department_id: r.department ? S.depts.find(x => x.name.toLowerCase() === r.department.toLowerCase()).id : null,
         job_title: r.job_title || '', join_date: r.join_date, probation_end: r.probation_end || null, contract_type: (r.contract_type || 'unlimited').toLowerCase(),
-        contract_end: r.contract_end || null, email: r.email || '', phone: r.phone || ''};
+        contract_end: r.contract_end || null, email: r.email || '', phone: r.phone || '', device_user_id: r.device_user_id || null};
       if (r.employee_no) row.employee_no = r.employee_no;
       const saved = await q(sb.from('employees').insert(row).select('id, employee_no').single());
       byNo[saved.employee_no] = saved.id; done.push({r, id: saved.id});
@@ -1002,6 +1008,196 @@ async function saveAllowance(form){
   toast('Allowance added'); openEmployee(emp);
 }
 
+// ---- Attendance (fingerprint device)
+const attCfg = () => ({start: '07:30', end: '16:30', grace_minutes: 15, ...(S.settings.attendance || {})});
+const mDate = ts => new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Muscat'}).format(new Date(ts));
+const mTime = ts => new Date(ts).toLocaleTimeString('en-GB', {timeZone: 'Asia/Muscat', hour: '2-digit', minute: '2-digit'});
+const mins = hhmm => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+const addDays = (d, n) => new Date(dt(d).getTime() + n * 864e5).toISOString().slice(0, 10);
+const weekday = d => DAY_NAMES[dt(d).getUTCDay()];
+let attMonth = today().slice(0, 7), attDay = today(), excPrefill = null, holidayCache = null;
+async function holidaySet(){ if (!holidayCache) holidayCache = new Set((await q(sb.from('holidays').select('day'))).map(h => h.day)); return holidayCache; }
+
+// One day for one employee: punches that day, leave or excuse covering it, rest days and holidays.
+function dayStatus(d, emp, punches, reqs, hols){
+  const rest = (S.settings.rest_days || [5, 6]).includes(dt(d).getUTCDay());
+  const ts = punches.map(p => p.punched_at).sort();
+  const out = {d, inT: ts[0] ? mTime(ts[0]) : '', outT: ts.length > 1 ? mTime(ts[ts.length - 1]) : '', hours: '', st: '', label: '', cls: 'p-mute'};
+  if (ts.length > 1) out.hours = ((new Date(ts[ts.length - 1]) - new Date(ts[0])) / 36e5).toFixed(1);
+  const req = reqs.find(r => r.start_date <= d && r.end_date >= d && ['approved', 'pending_manager', 'pending_hr'].includes(r.status));
+  if (emp && (d < emp.join_date || (emp.end_date && d > emp.end_date))) return {...out, st: 'none', label: 'Not employed', cls: 'p-mute'};
+  if (ts.length){
+    const c = attCfg(), first = mins(out.inT);
+    if (first > mins(c.start) + Number(c.grace_minutes || 0)) return {...out, st: 'late', label: `Late ${first - mins(c.start)} min`, cls: 'p-warn'};
+    if (ts.length === 1 && d < today()) return {...out, st: 'present', label: 'No check-out', cls: 'p-warn'};
+    return {...out, st: 'present', label: rest || hols.has(d) ? 'Worked on day off' : 'Present', cls: 'p-good'};
+  }
+  if (req){
+    const pending = req.status !== 'approved', ex = isExcuse(req.leave_type);
+    return {...out, st: pending ? 'pending' : 'leave', req, label: `${pending ? 'Waiting approval: ' : ''}${ex ? 'Excused' : typeName(req.leave_type)}`, cls: pending ? 'p-warn' : 'p-info'};
+  }
+  if (hols.has(d)) return {...out, st: 'off', label: 'Public holiday', cls: 'p-mute'};
+  if (rest) return {...out, st: 'off', label: 'Rest day', cls: 'p-mute'};
+  if (d > today()) return {...out, st: 'future'};
+  // Only call someone absent for days the device log has been imported for.
+  const c = attCfg();
+  if (!c.imported_until || d > c.imported_until || d < c.imported_from) return {...out, st: 'nodata', label: 'No device data yet', cls: 'p-mute'};
+  if (d === today() && new Date().toLocaleTimeString('en-GB', {timeZone: 'Asia/Muscat', hour: '2-digit', minute: '2-digit'}) < attCfg().end) return {...out, st: 'waiting', label: 'Not checked in yet', cls: 'p-mute'};
+  return {...out, st: 'absent', label: 'Absent', cls: 'p-bad'};
+}
+const monthRange = m => { const [y, mo] = m.split('-').map(Number); const end = new Date(Date.UTC(y, mo, 0)).toISOString().slice(0, 10); return [m + '-01', end]; };
+const punchesBetween = (from, to) => sb.from('attendance_punches').select('employee_id, punched_at').gte('punched_at', `${from}T00:00:00+04:00`).lt('punched_at', `${addDays(to, 1)}T00:00:00+04:00`).order('punched_at');
+
+async function attendanceMonth(emp, m){
+  const [from, to] = monthRange(m);
+  const [punches, reqs, hols] = await Promise.all([
+    q(punchesBetween(from, to).eq('employee_id', emp.id)),
+    q(sb.from('leave_requests').select('leave_type, start_date, end_date, status').eq('employee_id', emp.id).lte('start_date', to).gte('end_date', from)),
+    holidaySet()
+  ]);
+  const days = [];
+  for (let d = from; d <= to && d <= today(); d = addDays(d, 1)) days.push(dayStatus(d, emp, punches.filter(p => mDate(p.punched_at) === d), reqs, hols));
+  return days.reverse();
+}
+function attSummary(days){
+  const n = st => days.filter(x => x.st === st).length;
+  return `<div class="grid tiles" style="margin-bottom:18px">
+    <div class="panel tile"><div class="k">Present</div><div class="v">${n('present') + n('late')}</div><div class="n">days with a fingerprint</div></div>
+    <div class="panel tile"><div class="k">Late</div><div class="v">${n('late')}</div><div class="n">after ${attCfg().start} plus ${attCfg().grace_minutes} min</div></div>
+    <div class="panel tile"><div class="k">Absent</div><div class="v" style="color:${n('absent') ? 'var(--bad)' : 'inherit'}">${n('absent')}</div><div class="n">no fingerprint and no excuse</div></div>
+    <div class="panel tile"><div class="k">Leave and excuses</div><div class="v">${n('leave') + n('pending')}</div><div class="n">${n('pending')} waiting approval</div></div></div>`;
+}
+function attTable(days, own){
+  return table(['Day', 'Check in', 'Check out', 'Hours', 'Status', ''], days.filter(x => x.st !== 'none').map(x => `<tr>
+    <td><b style="font-weight:600">${fmt(x.d)}</b><div class="muted small">${weekday(x.d)}</div></td><td class="mono">${x.inT || '–'}</td><td class="mono">${x.outT || '–'}</td><td class="mono">${x.hours || ''}</td>
+    <td>${x.label ? pill(x.label, x.cls) : ''}</td><td>${own && x.st === 'absent' ? `<button class="btn sm" data-a="excuseFor" data-d="${x.d}">Send excuse</button>` : ''}</td></tr>`), 'No days to show yet.');
+}
+
+V.attendance = async () => {
+  const days = await attendanceMonth(S.emp, attMonth);
+  const t = days.find(x => x.d === today());
+  const todayCard = attMonth === today().slice(0, 7) && t ? `<div class="panel" style="margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+    <div><div class="small muted" style="text-transform:uppercase;letter-spacing:.09em;font-weight:600;font-size:11px">Today · ${weekday(t.d)} ${fmt(t.d)}</div>
+    <div style="font-family:var(--f-display);font-weight:800;font-size:22px;margin-top:4px">${t.inT ? `Checked in at ${t.inT}${t.outT ? `, out at ${t.outT}` : ''}` : t.label || 'No fingerprint yet'}</div></div>${t.label ? pill(t.label, t.cls) : ''}</div>` : '';
+  return header('My attendance', `From the fingerprint device. Working hours ${attCfg().start} to ${attCfg().end}. Missed a day? Send an excuse.`, `<input id="attMonth" type="month" value="${attMonth}" max="${today().slice(0, 7)}" style="width:auto" aria-label="Month">`)
+    + todayCard + attSummary(days) + `<div class="panel">${attTable(days, true)}</div>`;
+};
+
+V.attteam = async () => {
+  const d = attDay;
+  let emps = await q(sb.from('employees').select('id, employee_no, full_name, department_id, job_title, join_date, end_date, manager_id, status').not('status', 'in', '(resigned,terminated)').order('full_name'));
+  if (!isHR() && role() !== 'admin') emps = emps.filter(e => e.manager_id === S.emp?.id);
+  const [punches, reqs, hols] = await Promise.all([
+    q(punchesBetween(d, d)),
+    q(sb.from('leave_requests').select('employee_id, leave_type, start_date, end_date, status').lte('start_date', d).gte('end_date', d)),
+    holidaySet()
+  ]);
+  const rows = emps.map(e => ({e, x: dayStatus(d, e, punches.filter(p => p.employee_id === e.id && mDate(p.punched_at) === d), reqs.filter(r => r.employee_id === e.id), hols)})).filter(r => r.x.st !== 'none');
+  const order = {absent: 0, late: 1, waiting: 2, pending: 3, present: 4, leave: 5, off: 6};
+  rows.sort((a, b) => (order[a.x.st] ?? 9) - (order[b.x.st] ?? 9) || a.e.full_name.localeCompare(b.e.full_name));
+  const n = st => rows.filter(r => r.x.st === st).length;
+  const c = attCfg(), canImport = isHR() || role() === 'admin';
+  const settings = canImport ? `<details class="panel" style="margin-top:18px"><summary><b>Working hours and device numbers</b> <span class="muted small">used to mark late arrivals</span></summary>
+    <div class="fgrid" style="margin-top:14px"><div class="f"><label for="acStart">Day starts</label><input id="acStart" type="time" value="${c.start}"></div><div class="f"><label for="acEnd">Day ends</label><input id="acEnd" type="time" value="${c.end}"></div>
+    <div class="f"><label for="acGrace">Grace before late (minutes)</label><input id="acGrace" type="number" min="0" value="${c.grace_minutes}"></div></div>
+    <button class="btn" data-a="saveAttCfg">Save working hours</button>
+    <p class="muted small">Each employee needs their fingerprint device number on their record (Edit details, then Fingerprint device no.). Rest days and public holidays come from Leave rules.</p></details>` : '';
+  return header(isHR() || role() === 'admin' ? 'Attendance' : 'Team attendance', `${weekday(d)} ${fmt(d)} · ${rows.length} employees`,
+      `<input id="attDay" type="date" value="${d}" max="${today()}" style="width:auto" aria-label="Day">${canImport ? '<button class="btn primary" data-a="attImport">Import from fingerprint device</button>' : ''}`) + `
+    <div class="grid tiles" style="margin-bottom:18px">
+      <div class="panel tile"><div class="k">Present</div><div class="v">${n('present') + n('late')}</div><div class="n">${n('late')} late</div></div>
+      <div class="panel tile"><div class="k">Absent</div><div class="v" style="color:${n('absent') ? 'var(--bad)' : 'inherit'}">${n('absent')}</div><div class="n">no fingerprint and no excuse</div></div>
+      <div class="panel tile"><div class="k">On leave or excused</div><div class="v">${n('leave')}</div><div class="n">${n('pending')} waiting approval</div></div>
+      <div class="panel tile"><div class="k">Not in yet</div><div class="v">${n('waiting') + n('nodata')}</div><div class="n">${n('nodata') ? 'device log not imported for this day' : `today, before ${c.end}`}</div></div></div>`
+    + (c.imported_until ? `<p class="muted small" style="margin:-6px 0 14px">Device log imported up to ${fmt(c.imported_until)}.</p>` : '') + `
+    <div class="panel">${table(['No.', 'Employee', 'Department', 'Check in', 'Check out', 'Hours', 'Status'], rows.map(({e, x}) => `<tr class="click" data-a="emp" data-id="${e.id}">
+      <td class="mono">${esc(e.employee_no)}</td><td><b style="font-weight:600">${esc(e.full_name)}</b></td><td>${esc(deptName(e.department_id))}</td>
+      <td class="mono">${x.inT || '–'}</td><td class="mono">${x.outT || '–'}</td><td class="mono">${x.hours}</td><td>${x.label ? pill(x.label, x.cls) : ''}</td></tr>`), 'No employees to show.')}</div>` + settings;
+};
+
+// Import: the device software exports a log (Excel, CSV or the device's attlog .dat/.txt file).
+let attRows = null;
+function attImportForm(){
+  attRows = null;
+  drawer(drawerHead('Import from fingerprint device') + `<p>Export the attendance log from the fingerprint device software (or copy the log file from the device's USB stick), then choose it here. Excel, CSV and the device's text log all work.</p>
+    <p class="small muted">The file needs the employee's number on the device and the date and time of each fingerprint. Punches already imported are skipped, so you can import the same file twice safely.</p>
+    <div class="f" style="margin:14px 0"><label for="aiFile">Log file</label><input id="aiFile" type="file" accept=".csv,.txt,.dat,.xls,.xlsx"></div><div id="aiMap"></div>`);
+}
+async function readAttFile(file){
+  const name = file.name.toLowerCase();
+  if (/\.xlsx?$/.test(name)){
+    if (!window.XLSX) await new Promise((ok, bad) => { const sc = document.createElement('script'); sc.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'; sc.onload = ok; sc.onerror = () => bad(new Error('Could not load the Excel reader. Save the file as CSV and try again.')); document.head.appendChild(sc); });
+    const wb = XLSX.read(await file.arrayBuffer(), {cellDates: true});
+    const p2 = n => String(n).padStart(2, '0');
+    return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header: 1, raw: true, defval: ''}).map(r => r.map(v => v instanceof Date
+      ? `${v.getFullYear()}-${p2(v.getMonth() + 1)}-${p2(v.getDate())} ${p2(v.getHours())}:${p2(v.getMinutes())}:${p2(v.getSeconds())}` : String(v).trim())).filter(r => r.some(Boolean));
+  }
+  const text = await file.text();
+  if (text.includes('\t') && !text.split('\n')[0].includes(',')) return text.split(/\r?\n/).map(l => l.split('\t').map(x => x.trim())).filter(r => r.some(Boolean));
+  return parseCsv(text).map(r => r.map(x => x.trim()));
+}
+const looksDate = v => /\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}/.test(v);
+async function attFileChosen(file){
+  const rows = await readAttFile(file);
+  if (!rows.length) throw new Error('The file is empty.');
+  const hasHead = !rows[0].some(looksDate);
+  const head = hasHead ? rows[0] : rows[0].map((_, i) => `Column ${i + 1}`);
+  const body = hasHead ? rows.slice(1) : rows;
+  const low = head.map(h => h.toLowerCase());
+  const pick = (re, avoid = -1) => { const i = low.findIndex((h, k) => k !== avoid && re.test(h)); return i; };
+  let idc = pick(/^(ac-?no\.?|no\.?|user ?id|enroll.*|emp.*no.*|employee.*(no|id)|badge.*|person.*id|pin|id)$/);
+  let dtc = pick(/date.?\/?.?time|datetime|check.?time|punch.?time|timestamp|^time$/);
+  let tc = -1;
+  if (dtc < 0){ dtc = pick(/^date$/); tc = pick(/^time$/); }
+  if (!hasHead){ idc = 0; dtc = body[0].findIndex(looksDate); }
+  if (idc < 0) idc = 0; if (dtc < 0) dtc = body[0].findIndex(looksDate);
+  attRows = {head, body};
+  const sel = (id, cur, none) => `<select id="${id}">${none ? `<option value="-1">${none}</option>` : ''}${head.map((h, i) => `<option value="${i}" ${i === cur ? 'selected' : ''}>${esc(h)}${body[0]?.[i] ? ' (e.g. ' + esc(body[0][i]) + ')' : ''}</option>`).join('')}</select>`;
+  $('aiMap').innerHTML = `<div class="calc">${body.length} rows found. Check the columns below.</div><div class="fgrid">
+    <div class="f full"><label for="aiId">Employee number on the device</label>${sel('aiId', idc)}</div>
+    <div class="f full"><label for="aiDt">Date and time</label>${sel('aiDt', dtc)}</div>
+    <div class="f"><label for="aiTm">Separate time column</label>${sel('aiTm', tc, 'None, time is with the date')}</div>
+    <div class="f"><label for="aiOrder">Dates are written</label><select id="aiOrder"><option value="dmy">Day first (20/10/2026)</option><option value="mdy">Month first (10/20/2026)</option></select></div></div>
+    <div id="aiOut"></div><button class="btn primary" data-a="attImportRun">Import</button>`;
+}
+// Device time is Oman time (UTC+4, no daylight saving).
+function parsePunch(s, order){
+  const m = String(s).match(/(\d{1,4})[-/.](\d{1,2})[-/.](\d{1,4})\D+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([ap]\.?m\.?)?/i);
+  if (!m) return null;
+  let [, a, b, c, h, mi, se, ap] = m; let y, mo, d;
+  if (a.length === 4){ y = +a; mo = +b; d = +c; } else if (order === 'mdy'){ mo = +a; d = +b; y = +c; } else { d = +a; mo = +b; y = +c; }
+  if (y < 100) y += 2000; h = +h;
+  if (ap){ const pm = /p/i.test(ap); if (pm && h < 12) h += 12; if (!pm && h === 12) h = 0; }
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23) return null;
+  return new Date(Date.UTC(y, mo - 1, d, h - 4, +mi, +(se || 0))).toISOString();
+}
+async function attImportRun(){
+  const idc = +$('aiId').value, dtc = +$('aiDt').value, tc = +$('aiTm').value, order = $('aiOrder').value;
+  const emps = await q(sb.from('employees').select('id, employee_no, device_user_id'));
+  const byDev = {};
+  for (const e of emps){ if (e.device_user_id) byDev[String(e.device_user_id).replace(/^0+/, '')] = e.id; }
+  for (const e of emps){ const k = String(e.employee_no).replace(/^0+/, ''); if (!byDev[k]) byDev[k] = e.id; }
+  const out = [], unknown = new Set(); let bad = 0;
+  for (const r of attRows.body){
+    const dev = String(r[idc] ?? '').trim().replace(/\.0$/, '').replace(/^0+/, '');
+    const when = parsePunch(tc >= 0 ? `${r[dtc]} ${r[tc]}` : r[dtc], order);
+    if (!when){ bad++; continue; }
+    if (!byDev[dev]){ unknown.add(dev || '(blank)'); continue; }
+    out.push({employee_id: byDev[dev], punched_at: when, source: 'device', imported_by: S.user.id});
+  }
+  const uniq = [...new Map(out.map(x => [x.employee_id + x.punched_at, x])).values()];
+  for (let i = 0; i < uniq.length; i += 500) await q(sb.from('attendance_punches').upsert(uniq.slice(i, i + 500), {onConflict: 'employee_id,punched_at', ignoreDuplicates: true}));
+  sb.rpc('log_event', {p_action: 'attendance_import', p_detail: `${uniq.length} punches`});
+  if (uniq.length){
+    const ds = uniq.map(x => mDate(x.punched_at)).sort(), c = attCfg();
+    const from = c.imported_from && c.imported_from < ds[0] ? c.imported_from : ds[0], until = c.imported_until && c.imported_until > ds[ds.length - 1] ? c.imported_until : ds[ds.length - 1];
+    await q(sb.from('settings').upsert({key: 'attendance', value: {...(S.settings.attendance || {}), imported_from: from, imported_until: until}}));
+    await loadLookups();
+  }
+  $('aiOut').innerHTML = `<div class="msg ${unknown.size || bad ? 'bad' : 'good'}">Imported ${uniq.length} fingerprints.${unknown.size ? `<br>${unknown.size} device numbers are not linked to an employee: ${[...unknown].slice(0, 15).map(esc).join(', ')}. Add them on each employee (Edit details, Fingerprint device no.) and import again.` : ''}${bad ? `<br>${bad} rows had a date that could not be read. Check "Dates are written".` : ''}</div>`;
+  if (S.view === 'attteam') render();
+}
+
 // ---- Leave rules
 V.rules = async () => {
   const hol = await q(sb.from('holidays').select('*').order('day'));
@@ -1127,6 +1323,10 @@ const A = {
   newUser: el => userForm(el.dataset.id || null),
   resetPw: el => resetPw(el.dataset.id, el.dataset.u),
   setStatus: async el => { try { await q(sb.rpc('admin_update_user', {p_user: el.dataset.id, p_role: el.dataset.role, p_status: el.dataset.s})); toast(el.dataset.s === 'active' ? 'Login enabled' : 'Login disabled'); render(); } catch (e){ toast(errText(e)); } },
+  excuseFor: el => { excPrefill = el.dataset.d; excMsg = null; go('excuse'); },
+  attImport: () => attImportForm(),
+  attImportRun: () => attImportRun(),
+  saveAttCfg: async () => { await q(sb.from('settings').upsert({key: 'attendance', value: {...(S.settings.attendance || {}), start: $('acStart').value, end: $('acEnd').value, grace_minutes: Number($('acGrace').value || 0)}})); await loadLookups(); toast('Working hours saved'); render(); },
   preparePay: () => preparePay(),
   payStatus: async el => { if (el.dataset.s !== 'draft' && !el.dataset.confirm){ el.dataset.confirm = 1; el.textContent = el.dataset.s === 'paid' ? 'Confirm paid' : 'Confirm approve'; return; }
     await q(sb.rpc('set_payroll_status', {p_run: Number(el.dataset.id), p_status: el.dataset.s})); toast({approved: 'Payroll approved. Employees can see their payslips.', paid: 'Marked as paid', draft: 'Back to draft'}[el.dataset.s]); render(); },
@@ -1173,6 +1373,9 @@ document.addEventListener('change', ev => {
   if (t.id === 'exType') $('exInfo').innerHTML = excuseInfo(S.types.find(x => x.code === t.value));
   if (t.id === 'empShow'){ empFilter.show = t.value; render(); }
   if (t.id === 'payMonth' && t.value){ payMonth = t.value; render(); }
+  if (t.id === 'attMonth' && t.value){ attMonth = t.value; render(); }
+  if (t.id === 'attDay' && t.value){ attDay = t.value; render(); }
+  if (t.id === 'aiFile' && t.files[0]) attFileChosen(t.files[0]).catch(e => { $('aiMap').innerHTML = `<div class="msg bad">${esc(errText(e))}</div>`; });
   if (t.id === 'ufEmp') $('ufUser').value = t.selectedOptions[0]?.dataset.s || '';
   if (t.dataset.a2 === 'role') q(sb.rpc('admin_update_user', {p_user: t.dataset.id, p_role: t.value, p_status: 'active'})).then(() => { toast('Role saved'); render(); }).catch(e => toast(errText(e)));
 });
