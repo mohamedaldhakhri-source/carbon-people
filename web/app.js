@@ -255,7 +255,7 @@ function renderNav(){
   let last = '';
   $('nav').innerHTML = navItems().map(([k, label]) => {
     const g = NAV_GROUP[k], head = g !== last ? `<div class="grp">${g}</div>` : ''; last = g;
-    return `${head}<button data-a="nav" data-v="${k}" ${k === S.view ? 'aria-current="page"' : ''}><svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[k] || ''}</svg><span class="l">${label}</span>${k === 'approvals' && S.pendingCount ? `<span class="count">${S.pendingCount}</span>` : ''}</button>`;
+    return `${head}<button data-a="nav" data-v="${k}" ${k === (S.view === 'profile' ? S.profileBack : S.view) ? 'aria-current="page"' : ''}><svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[k] || ''}</svg><span class="l">${label}</span>${k === 'approvals' && S.pendingCount ? `<span class="count">${S.pendingCount}</span>` : ''}</button>`;
   }).join('');
 }
 async function render(){
@@ -484,40 +484,59 @@ V.employees = async () => {
       <td class="mono">${esc(e.employee_no)}</td><td>${esc(e.full_name)}</td><td>${esc(deptName(e.department_id))}</td><td>${esc(e.job_title)}</td><td>${esc(names[e.manager_id] || '')}</td>
       <td>${pill(e.nat_type === 'omani' ? 'Omani' : 'Expat' + (e.nationality ? ' · ' + e.nationality : ''), e.nat_type === 'omani' ? 'p-info' : 'p-mute')}</td><td class="mono">${fmt(e.join_date)}</td><td>${EMP_STATUS[e.status]}</td></tr>`), 'No employees match.')}</div>`;
 };
-async function openEmployee(id){
+// Employee profile: a full page with details, documents, pay and leave for one person.
+function openEmployee(id){
+  if (S.view !== 'profile') S.profileBack = S.view;
+  S.profileId = id; S.view = 'profile'; closeDrawer(); render(); window.scrollTo(0, 0);
+}
+V.profile = async () => {
+  const id = S.profileId;
   const e = await q(sb.from('employees').select('*').eq('id', id).single());
-  const [docs, mgr, pay, prof, bal, allows] = await Promise.all([
-    canDocs() || id === S.emp?.id ? q(sb.from('documents').select('*').eq('employee_id', id).order('expiry_date')) : Promise.resolve([]),
+  const seeDocs = canDocs() || id === S.emp?.id;
+  const [docs, mgr, pay, prof, bal, allows, reqs] = await Promise.all([
+    seeDocs ? q(sb.from('documents').select('*').eq('employee_id', id).order('expiry_date')) : Promise.resolve([]),
     e.manager_id ? q(sb.from('employees').select('full_name').eq('id', e.manager_id).maybeSingle()) : Promise.resolve(null),
     isHRM() ? q(sb.from('employee_pay').select('*').eq('employee_id', id).maybeSingle()) : Promise.resolve(null),
     isHR() || canUsers() ? q(sb.from('profiles').select('username, role, status').eq('employee_id', id).maybeSingle()) : Promise.resolve(null),
     q(sb.rpc('leave_balance', {p_employee: id, p_type: 'annual', p_year: year()})).catch(() => []),
-    isHRM() ? q(sb.from('pay_allowances').select('*').eq('employee_id', id).order('start_date', {ascending: false})) : Promise.resolve([])
+    isHRM() ? q(sb.from('pay_allowances').select('*').eq('employee_id', id).order('start_date', {ascending: false})) : Promise.resolve([]),
+    q(sb.from('leave_requests').select('*').eq('employee_id', id).order('start_date', {ascending: false}).limit(12)).catch(() => [])
   ]);
   const allowNow = allows.filter(a => a.start_date <= today() && (!a.end_date || a.end_date >= today())).reduce((s, a) => s + Number(a.amount), 0);
   const months = (() => { const a = dt(e.join_date), b = dt(e.end_date || today()); return (b.getUTCFullYear() - a.getUTCFullYear()) * 12 + b.getUTCMonth() - a.getUTCMonth() - (b.getUTCDate() < a.getUTCDate() ? 1 : 0); })();
   const b = bal[0];
-  let eos = '';
-  if (e.nat_type === 'expat'){
-    eos = pay ? `About OMR ${omr(pay.basic_salary * months / 12)} (1 month basic per year, ${Math.floor(months / 12)}y ${months % 12}m, before unpaid leave)` : '1 month of basic wage per year of service';
-  } else eos = 'Covered by the Social Protection Fund';
-  drawer(drawerHead(esc(e.full_name)) + `<p class="muted">${esc(e.job_title)}${e.department_id ? ' · ' + esc(deptName(e.department_id)) : ''}</p>
-    <dl class="dl"><dt>Employee no.</dt><dd class="mono">${esc(e.employee_no)}</dd><dt>Status</dt><dd>${EMP_STATUS[e.status]}${e.end_date ? ' on ' + fmt(e.end_date) : ''}</dd>
+  const eos = e.nat_type === 'expat'
+    ? (pay ? `About OMR ${omr(pay.basic_salary * months / 12)} (1 month basic per year, ${Math.floor(months / 12)}y ${months % 12}m, before unpaid leave)` : '1 month of basic wage per year of service')
+    : 'Covered by the Social Protection Fund';
+  const left = ['resigned', 'terminated'].includes(e.status);
+  const lastLeave = reqs.find(r => r.status === 'approved' && !isExcuse(r.leave_type) && r.start_date <= today());
+  const back = navItems().find(n => n[0] === S.profileBack);
+  const actions = `${back ? `<button class="btn" data-a="nav" data-v="${back[0]}">← ${back[1]}</button>` : ''}${canEditEmp() ? `<button class="btn" data-a="editEmp" data-id="${e.id}">Edit details</button>` : ''}${canDocs() ? `<button class="btn primary" data-a="newDoc" data-id="${e.id}">Upload document</button>` : ''}`;
+  const sub = `${esc(e.job_title) || 'No job title'}${e.department_id ? ' · ' + esc(deptName(e.department_id)) : ''} · <span class="mono">${esc(e.employee_no)}</span> ${pill(EMP_STATUS[e.status] + (e.end_date ? ' ' + fmt(e.end_date) : ''), left ? 'p-bad' : e.status === 'probation' ? 'p-warn' : 'p-good')}`;
+  const details = `<div class="panel"><h2>Details</h2><dl class="dl" style="margin:0">
     <dt>Nationality</dt><dd>${e.nat_type === 'omani' ? 'Omani' : 'Expat'}${e.nationality ? ' · ' + esc(e.nationality) : ''}</dd>
+    <dt>Gender</dt><dd>${e.gender === 'female' ? 'Female' : 'Male'}</dd>
+    ${e.date_of_birth ? `<dt>Date of birth</dt><dd class="mono">${fmt(e.date_of_birth)}</dd>` : ''}
     <dt>Line manager</dt><dd>${mgr ? esc(mgr.full_name) : '<span class="muted">None</span>'}</dd>
     <dt>Joined</dt><dd class="mono">${fmt(e.join_date)} (${Math.floor(months / 12)}y ${months % 12}m)</dd>
     ${e.probation_end ? `<dt>Probation ends</dt><dd class="mono">${fmt(e.probation_end)}</dd>` : ''}
     <dt>Contract</dt><dd>${e.contract_type === 'fixed' ? 'Fixed term' + (e.contract_end ? ' to ' + fmt(e.contract_end) : '') : 'Unlimited'}</dd>
+    ${e.work_location ? `<dt>Work location</dt><dd>${esc(e.work_location)}</dd>` : ''}
     ${e.email ? `<dt>Email</dt><dd>${esc(e.email)}</dd>` : ''}${e.phone ? `<dt>Phone</dt><dd>${esc(e.phone)}</dd>` : ''}
     ${e.emergency_contact ? `<dt>Emergency</dt><dd>${esc(e.emergency_contact)}</dd>` : ''}
-    ${b && b.remaining != null ? `<dt>Annual leave</dt><dd class="mono">${b.remaining} of ${b.entitled} days left</dd>` : ''}
-    ${pay ? `<dt>Basic salary</dt><dd class="mono">OMR ${omr(pay.basic_salary)}</dd><dt>Allowances now</dt><dd class="mono">OMR ${omr(allowNow)}</dd><dt>Gross salary</dt><dd class="mono"><b>OMR ${omr(Number(pay.basic_salary) + allowNow)}</b></dd>${pay.bank_iban ? `<dt>Bank account</dt><dd class="mono">${esc(pay.bank_iban)}${pay.bank_bic ? ' · ' + esc(pay.bank_bic) : ''}</dd>` : ''}` : ''}
     ${isHR() || isHRM() ? `<dt>End of service</dt><dd class="small">${eos}</dd>` : ''}
-    ${isHR() || canUsers() ? `<dt>Login</dt><dd>${prof ? `${esc(prof.username)} · ${ROLE_NAMES[prof.role]}${prof.status === 'disabled' ? ' · disabled' : ''}` : '<span class="muted">No login yet</span>'}</dd>` : ''}</dl>
-    ${canEditEmp() ? `<div class="row" style="margin-bottom:18px"><button class="btn primary" data-a="editEmp" data-id="${e.id}">Edit details</button>${canDocs() ? `<button class="btn" data-a="newDoc" data-id="${e.id}">Upload document</button>` : ''}</div>` : ''}
-    ${isHRM() ? allowancesBlock(e.id, allows) : ''}
-    ${canDocs() || id === S.emp?.id ? `<h2>Documents</h2>${docsTable(docs, false)}` : ''}`);
-}
+    ${isHR() || canUsers() ? `<dt>Login</dt><dd>${prof ? `${esc(prof.username)} · ${ROLE_NAMES[prof.role]}${prof.status === 'disabled' ? ' · disabled' : ''}` : '<span class="muted">No login yet</span>'}</dd>` : ''}</dl></div>`;
+  const docPanel = seeDocs ? `<div class="panel"><div class="row between" style="margin-bottom:6px"><h2 style="margin:0">Documents (${docs.length})</h2>${canDocs() ? `<button class="btn sm" data-a="newDoc" data-id="${e.id}">+ Upload</button>` : ''}</div>${docsTable(docs, false)}</div>` : '';
+  const leavePanel = `<div class="panel"><h2>Leave</h2><div class="bal" style="margin-bottom:14px">
+      <div><b>${b?.remaining ?? '–'}</b><span>Annual leave left of ${b?.entitled ?? 0} in ${year()}</span></div>
+      <div><b style="font-size:16px">${lastLeave ? fmt(lastLeave.start_date) : 'None'}</b><span>${lastLeave ? `Last leave: ${esc(typeName(lastLeave.leave_type))}, ${lastLeave.days} days` : 'No leave taken yet'}</span></div></div>
+    ${requestTable(reqs, false)}</div>`;
+  const payPanel = isHRM() ? `<div class="panel"><h2>Pay</h2>${pay ? `<div class="bal" style="margin-bottom:16px"><div><b>${omr(pay.basic_salary)}</b><span>Basic salary (OMR)</span></div><div><b>${omr(allowNow)}</b><span>Allowances now (OMR)</span></div><div><b>${omr(Number(pay.basic_salary) + allowNow)}</b><span>Gross salary (OMR)</span></div></div>
+      ${pay.bank_iban ? `<p class="small muted" style="margin:-4px 0 14px">Bank account <span class="mono">${esc(pay.bank_iban)}</span>${pay.bank_bic ? ' · ' + esc(pay.bank_bic) : ''}</p>` : '<p class="msg bad">No bank account. Add it with Edit details.</p>'}` : '<p class="msg bad">No basic salary yet. Add it with Edit details.</p>'}
+    ${allowancesBlock(e.id, allows)}</div>` : '';
+  return header(esc(e.full_name), sub, actions) + `<div class="grid two" style="align-items:start">${details}${docPanel || leavePanel}</div>
+    ${docPanel ? `<div style="margin-top:18px">${leavePanel}</div>` : ''}${payPanel ? `<div style="margin-top:18px">${payPanel}</div>` : ''}`;
+};
 function docsTable(docs, withEmp){
   return table([...(withEmp ? ['Employee'] : []), 'Document', 'Number', 'Expiry', 'Status', ''], docs.map(d => { const s = docState(d.expiry_date); return `<tr>
     ${withEmp ? `<td><a href="#" data-a="emp" data-id="${d.employee_id}">${esc(d.employees?.full_name)}</a></td>` : ''}<td>${DOC_TYPES[d.doc_type]}${d.notes ? `<div class="muted small">${esc(d.notes)}</div>` : ''}</td>
@@ -584,7 +603,7 @@ async function saveEmployee(form){
       await q(sb.from('employee_pay').upsert({employee_id: saved.id, basic_salary: Number($('pf_basic').value || 0), bank_bic: $('pf_bic').value.trim().toUpperCase(), bank_iban: $('pf_iban').value.trim(), updated_at: new Date().toISOString()}));
     }
     toast(id ? 'Employee saved' : 'Employee added');
-    await render(); openEmployee(saved.id);
+    openEmployee(saved.id);
   } catch (e){ const el = $('efErr'); el.textContent = errText(e); el.hidden = false; $('efBtn').disabled = false; }
 }
 
@@ -634,19 +653,39 @@ async function runImport(){
 
 // ---- Documents
 let docFilter = 'all';
+let docQ = '';
 async function docsView(own){
-  let query = sb.from('documents').select('*, employees(full_name)').order('expiry_date', {nullsFirst: false});
-  if (own) query = query.eq('employee_id', S.emp.id);
-  let docs = await q(query);
   const t = today();
-  const counts = {expired: docs.filter(d => d.expiry_date && d.expiry_date < t).length, d30: docs.filter(d => d.expiry_date >= t && daysUntil(d.expiry_date) <= 30).length, d90: docs.filter(d => d.expiry_date && daysUntil(d.expiry_date) > 30 && daysUntil(d.expiry_date) <= 90).length};
-  if (docFilter === 'expired') docs = docs.filter(d => d.expiry_date && d.expiry_date < t);
-  if (docFilter === 'd30') docs = docs.filter(d => d.expiry_date >= t && daysUntil(d.expiry_date) <= 30);
-  if (docFilter === 'd90') docs = docs.filter(d => d.expiry_date && daysUntil(d.expiry_date) > 30 && daysUntil(d.expiry_date) <= 90);
+  const bucket = d => !d.expiry_date ? 'none' : d.expiry_date < t ? 'expired' : daysUntil(d.expiry_date) <= 30 ? 'd30' : daysUntil(d.expiry_date) <= 90 ? 'd90' : 'ok';
+  if (own){
+    const docs = await q(sb.from('documents').select('*').eq('employee_id', S.emp.id).order('expiry_date', {nullsFirst: false}));
+    return header('My documents', 'Your documents on file with HR. To add or replace one, send it to HR.') + `<div class="panel">${docsTable(docs, false)}</div>`;
+  }
+  const [emps, docs] = await Promise.all([
+    q(sb.from('employees').select('id, employee_no, full_name, department_id, job_title, status').not('status', 'in', '(resigned,terminated)').order('full_name')),
+    q(sb.from('documents').select('id, employee_id, doc_type, expiry_date'))
+  ]);
+  const rank = {expired: 0, d30: 1, d90: 2, ok: 3, none: 4};
+  const rows = emps.map(e => {
+    const mine = docs.filter(d => d.employee_id === e.id);
+    const dated = mine.filter(d => d.expiry_date).sort((a, b) => a.expiry_date.localeCompare(b.expiry_date));
+    const worst = mine.length ? mine.map(bucket).sort((a, b) => rank[a] - rank[b])[0] : 'missing';
+    return {e, mine, next: dated[0], worst, has: k => mine.some(d => bucket(d) === k)};
+  });
+  const counts = {expired: rows.filter(r => r.has('expired')).length, d30: rows.filter(r => r.has('d30')).length, d90: rows.filter(r => r.has('d90')).length, missing: rows.filter(r => !r.mine.length).length};
+  const ql = docQ.toLowerCase();
+  let shown = rows.filter(r => !ql || [r.e.full_name, r.e.employee_no, deptName(r.e.department_id)].join(' ').toLowerCase().includes(ql));
+  if (docFilter === 'missing') shown = shown.filter(r => !r.mine.length);
+  else if (docFilter !== 'all') shown = shown.filter(r => r.has(docFilter));
+  shown.sort((a, b) => ((rank[a.worst] ?? 5) - (rank[b.worst] ?? 5)) || a.e.full_name.localeCompare(b.e.full_name));
+  const state = r => r.worst === 'missing' ? pill('No documents', 'p-mute') : r.worst === 'expired' ? pill('Has expired', 'p-bad') : r.worst === 'd30' ? pill('Expiring soon', 'p-bad') : r.worst === 'd90' ? pill('Within 90 days', 'p-warn') : pill('All valid', 'p-good');
   const chip = (k, label) => `<button class="btn sm ${docFilter === k ? 'primary' : ''}" data-a="docFilter" data-v="${k}">${label}</button>`;
-  return header(own ? 'My documents' : 'Documents', own ? 'Your documents on file with HR. To add or replace one, send it to HR.' : 'Passports, resident cards, work permits, civil IDs and contracts, soonest expiry first', own ? '' : `<button class="btn primary" data-a="newDoc">Upload document</button>`) + `<div class="panel">
-    <div class="row" style="margin-bottom:12px">${chip('all', 'All')}${chip('expired', `Expired (${counts.expired})`)}${chip('d30', `Within 30 days (${counts.d30})`)}${chip('d90', `31 to 90 days (${counts.d90})`)}</div>
-    ${docsTable(docs, !own)}</div>`;
+  return header('Documents', 'Choose an employee to see their details and files. People with expired or expiring documents are listed first.', `<button class="btn primary" data-a="newDoc">Upload document</button>`) + `<div class="panel">
+    <div class="row" style="margin-bottom:14px"><input id="docQ" placeholder="Search name, number or department" value="${esc(docQ)}" style="max-width:300px">
+      ${chip('all', 'Everyone')}${chip('expired', `Expired (${counts.expired})`)}${chip('d30', `Within 30 days (${counts.d30})`)}${chip('d90', `31 to 90 days (${counts.d90})`)}${chip('missing', `No documents (${counts.missing})`)}</div>
+    ${table(['No.', 'Employee', 'Department', 'Files', 'Next expiry', 'Status'], shown.map(r => `<tr class="click" data-a="emp" data-id="${r.e.id}">
+      <td class="mono">${esc(r.e.employee_no)}</td><td><b style="font-weight:600">${esc(r.e.full_name)}</b>${r.e.job_title ? `<div class="muted small">${esc(r.e.job_title)}</div>` : ''}</td><td>${esc(deptName(r.e.department_id))}</td>
+      <td class="mono">${r.mine.length}</td><td>${r.next ? `${DOC_TYPES[r.next.doc_type]}<div class="mono small muted">${fmt(r.next.expiry_date)}</div>` : '<span class="muted">–</span>'}</td><td>${state(r)}</td></tr>`), 'No employees match.')}</div>`;
 }
 V.documents = () => docsView(false);
 V.mydocs = () => docsView(true);
@@ -947,7 +986,7 @@ async function exportWps(runId){
 function allowancesBlock(empId, list){
   const t = today();
   const state = a => a.end_date && a.end_date < t ? pill('Ended ' + fmt(a.end_date), 'p-mute') : a.start_date > t ? pill('From ' + fmt(a.start_date), 'p-info') : a.end_date ? pill('Temporary to ' + fmt(a.end_date), 'p-warn') : pill('Ongoing', 'p-good');
-  return `<h2>Allowances</h2>${table(['Allowance', 'OMR / month', 'Status', ''], list.map(a => `<tr><td>${esc(a.name)}${a.in_spf ? '' : '<div class="muted small">Not in SPF wage</div>'}${a.note ? `<div class="muted small">${esc(a.note)}</div>` : ''}</td>
+  return `<h3 style="font-size:13px;margin:0 0 6px">Allowances</h3>${table(['Allowance', 'OMR / month', 'Status', ''], list.map(a => `<tr><td>${esc(a.name)}${a.in_spf ? '' : '<div class="muted small">Not in SPF wage</div>'}${a.note ? `<div class="muted small">${esc(a.note)}</div>` : ''}</td>
     <td class="mono">${omr(a.amount)}</td><td>${state(a)}</td><td style="white-space:nowrap">${!a.end_date || a.end_date >= t ? `<button class="btn sm" data-a="endAllow" data-id="${a.id}" data-emp="${empId}">Stop</button>` : ''} <button class="btn sm danger" data-a="delAllow" data-id="${a.id}" data-emp="${empId}">Remove</button></td></tr>`), 'No allowances.')}
     <form id="allowForm" data-emp="${empId}" style="margin:12px 0 18px"><div class="fgrid">
       <div class="f"><label for="alName">Allowance</label><input id="alName" list="alNames" required placeholder="Housing"><datalist id="alNames">${['Housing', 'Transport', 'Phone', 'Site', 'Food', 'Acting', 'Overtime (fixed)'].map(x => `<option value="${x}">`).join('')}</datalist></div>
@@ -1124,6 +1163,7 @@ document.addEventListener('submit', ev => {
 });
 let searchTimer;
 document.addEventListener('input', ev => {
+  if (ev.target.id === 'docQ'){ clearTimeout(searchTimer); searchTimer = setTimeout(async () => { docQ = ev.target.value; await render(); const s = $('docQ'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }, 250); }
   if (ev.target.id === 'empQ'){ clearTimeout(searchTimer); searchTimer = setTimeout(async () => { empFilter.q = ev.target.value; await render(); const s = $('empQ'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }, 250); }
 });
 document.addEventListener('change', ev => {
