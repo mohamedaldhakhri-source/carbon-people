@@ -71,7 +71,7 @@ function errText(e){
 }
 let toastTimer;
 function toast(t){ const el = $('toast'); el.textContent = t; el.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => el.hidden = true, 3200); }
-function drawer(html){ $('drawer').innerHTML = `<div class="drawer" role="dialog" aria-modal="true">${html}</div>`; }
+function drawer(html){ $('drawer').innerHTML = `<div class="scrim" data-a="close"></div><div class="drawer" role="dialog" aria-modal="true">${html}</div>`; }
 function closeDrawer(){ $('drawer').innerHTML = ''; }
 const drawerHead = title => `<div class="row between" style="margin-bottom:8px"><h2 style="margin:0">${title}</h2><button class="btn sm" data-a="close">Close</button></div>`;
 async function q(p){ const {data, error} = await p; if (error) throw error; return data; }
@@ -134,16 +134,18 @@ function tempPassword(){
 }
 
 // ---------------------------------------------------------------- sign in
+const BLOCKS = '<div class="blocks" aria-hidden="true"><i></i><i></i><i></i><i></i></div>';
+const loginSide = () => `<div class="side"><img src="logo-full.png" alt="Carbon Engineering Design">
+  <div style="display:grid;gap:14px">${BLOCKS}<p>Your People. One Platform. Leave, documents, letters and payroll for the Carbon Engineering Design team.</p></div></div>`;
 function renderLogin(msg = ''){
   closeDrawer();
-  root.innerHTML = `<div class="login"><form class="panel" id="loginForm">
-    <div class="brand">Carbon People<small>Carbon Engineering Design · Your People. One Platform.</small></div>
-    <p class="muted small" style="margin:14px 0 18px">Sign in with the username and password HR gave you.</p>
+  root.innerHTML = `<div class="login">${loginSide()}<div class="formside"><form id="loginForm">
+    <h1>Carbon People</h1><p class="muted" style="margin:0 0 26px">Sign in with the username and password HR gave you.</p>
     ${msg ? `<div class="msg bad">${esc(msg)}</div>` : ''}
     <div class="f" style="margin-bottom:12px"><label for="lUser">Username</label><input id="lUser" autocomplete="username" autocapitalize="none" required></div>
     <div class="f" style="margin-bottom:16px"><label for="lPass">Password</label><input id="lPass" type="password" autocomplete="current-password" required></div>
-    <button class="btn primary" id="lBtn" style="width:100%">Sign in</button>
-    <p class="muted small" style="margin:14px 0 0">Forgot your password? Ask HR to reset it.</p></form></div>`;
+    <button class="btn primary" id="lBtn" style="width:100%;justify-content:center;padding:10px">Sign in</button>
+    <p class="muted small" style="margin:16px 0 0">Forgot your password? Ask HR to reset it.</p></form></div></div>`;
   $('lUser').focus();
 }
 async function doLogin(){
@@ -155,14 +157,14 @@ async function doLogin(){
   await boot();
 }
 function renderChangePassword(msg = ''){
-  root.innerHTML = `<div class="login"><form class="panel" id="pwForm">
-    <div class="brand">Set your password</div>
-    <p class="muted small" style="margin:10px 0 18px">Choose a new password before you continue. Use at least 10 characters.</p>
+  root.innerHTML = `<div class="login">${loginSide()}<div class="formside"><form id="pwForm">
+    <h1>Set your password</h1>
+    <p class="muted" style="margin:0 0 24px">Choose a new password before you continue. Use at least 10 characters.</p>
     ${msg ? `<div class="msg bad">${esc(msg)}</div>` : ''}
     <div class="f" style="margin-bottom:12px"><label for="pw1">New password</label><input id="pw1" type="password" autocomplete="new-password" minlength="10" required></div>
     <div class="f" style="margin-bottom:16px"><label for="pw2">Repeat new password</label><input id="pw2" type="password" autocomplete="new-password" minlength="10" required></div>
-    <button class="btn primary" id="pwBtn" style="width:100%">Save password</button>
-    <button class="btn" type="button" data-a="signout" style="width:100%;margin-top:8px">Sign out</button></form></div>`;
+    <button class="btn primary" id="pwBtn" style="width:100%;justify-content:center;padding:10px">Save password</button>
+    <button class="btn" type="button" data-a="signout" style="width:100%;margin-top:8px;justify-content:center">Sign out</button></form></div></div>`;
 }
 async function doChangePassword(){
   const a = $('pw1').value, b = $('pw2').value;
@@ -197,8 +199,10 @@ async function boot(){
   S.emp = prof.employee_id ? await q(sb.from('employees').select('*').eq('id', prof.employee_id).maybeSingle()) : null;
   await loadLookups();
   S.isManager = S.emp ? (await q(sb.from('employees').select('id', {count: 'exact', head: false}).eq('manager_id', S.emp.id).limit(1))).length > 0 : false;
-  root.innerHTML = `<div class="app"><aside class="rail noprint"><div class="brand">Carbon People<small>Your People. One Platform.</small></div>
-    <nav class="nav" id="nav"></nav><div class="who"><div><b>${esc(S.emp?.full_name || S.profile.username)}</b><br>${ROLE_NAMES[role()]}${S.isManager ? ' · Line manager' : ''}</div>
+  const who = S.emp?.full_name || S.profile.username;
+  const initials = who.split(/\s+/).filter(w => !/^(al|bin|bint)$/i.test(w)).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+  root.innerHTML = `<div class="app"><aside class="rail noprint"><div class="brand"><img src="logo-mark.png" alt=""><div><b>Carbon<br>People</b><small>Your People. One Platform.</small></div></div>${BLOCKS}
+    <nav class="nav" id="nav" aria-label="Main"></nav><div class="who"><div class="me"><span class="avatar" aria-hidden="true">${esc(initials)}</span><div><b>${esc(who)}</b>${ROLE_NAMES[role()]}${S.isManager ? ' · Line manager' : ''}</div></div>
     <div class="row"><button class="btn sm" data-a="mypw">Change password</button><button class="btn sm" data-a="signout">Sign out</button></div></div></aside><main id="main"></main></div>`;
   if (!navItems().some(i => i[0] === S.view)) S.view = navItems()[0][0];
   await render();
@@ -228,8 +232,31 @@ function mineToDecide(r){
   if (r.status === 'pending_hr' && isHR()) return true;
   return false;
 }
+const ICONS = {
+  dashboard: '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
+  leave: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
+  excuse: '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/><path d="m9 14 2 2 4-4"/>',
+  payslips: '<path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M8 8h8M8 12h8M8 16h5"/>',
+  letters: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/>',
+  mydocs: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  approvals: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+  employees: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+  letterq: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  reports: '<path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-3"/>',
+  payroll: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>',
+  rules: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+  users: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/>',
+  audit: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5M12 7v5l4 2"/>'
+};
+ICONS.documents = ICONS.mydocs;
+const NAV_GROUP = {dashboard: 'Me', leave: 'Me', excuse: 'Me', payslips: 'Me', letters: 'Me', mydocs: 'Me', approvals: 'Team', employees: 'Team',
+  documents: 'HR', letterq: 'HR', reports: 'HR', payroll: 'HR', rules: 'Settings', users: 'Settings', audit: 'Settings'};
 function renderNav(){
-  $('nav').innerHTML = navItems().map(([k, label]) => `<button data-a="nav" data-v="${k}" ${k === S.view ? 'aria-current="page"' : ''}>${label}${k === 'approvals' && S.pendingCount ? `<span class="count">${S.pendingCount}</span>` : ''}</button>`).join('');
+  let last = '';
+  $('nav').innerHTML = navItems().map(([k, label]) => {
+    const g = NAV_GROUP[k], head = g !== last ? `<div class="grp">${g}</div>` : ''; last = g;
+    return `${head}<button data-a="nav" data-v="${k}" ${k === S.view ? 'aria-current="page"' : ''}><svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[k] || ''}</svg><span class="l">${label}</span>${k === 'approvals' && S.pendingCount ? `<span class="count">${S.pendingCount}</span>` : ''}</button>`;
+  }).join('');
 }
 async function render(){
   const main = $('main');
