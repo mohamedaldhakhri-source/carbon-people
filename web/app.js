@@ -24,6 +24,7 @@ const canUsers = () => ['hr_manager', 'admin'].includes(role());
 const canRules = () => ['hr_manager', 'admin'].includes(role());
 const canEditEmp = () => isHR() || role() === 'admin';
 const canDocs = () => isHR() || role() === 'admin';
+const canPay = () => ['hr_manager', 'admin'].includes(role());
 const isExcuse = c => S.types.find(t => t.code === c)?.category === 'excuse';
 const ROLE_NAMES = {employee: 'Employee', hr_officer: 'HR Officer', hr_manager: 'HR Manager', admin: 'System Admin'};
 const STATUS_NAMES = {pending_manager: 'Waiting for manager', pending_hr: 'Waiting for HR', approved: 'Approved', rejected: 'Rejected', returned: 'Returned for changes', cancelled: 'Cancelled'};
@@ -217,7 +218,7 @@ function navItems(){
   else if (S.isManager) n.push(['employees', 'My team']);
   if (canDocs()) n.push(['documents', 'Documents']);
   if (isHR()) n.push(['letterq', 'Letter requests'], ['reports', 'Reports']);
-  if (isHRM()) n.push(['payroll', 'Payroll']);
+  if (canPay()) n.push(['payroll', 'Payroll']);
   if (canRules()) n.push(['rules', 'Leave rules']);
   if (canUsers()) n.push(['users', 'User accounts'], ['audit', 'Audit log']);
   return n;
@@ -502,10 +503,10 @@ V.profile = async () => {
   const [docs, mgr, pay, prof, bal, allows, reqs] = await Promise.all([
     seeDocs ? q(sb.from('documents').select('*').eq('employee_id', id).order('expiry_date')) : Promise.resolve([]),
     e.manager_id ? q(sb.from('employees').select('full_name').eq('id', e.manager_id).maybeSingle()) : Promise.resolve(null),
-    isHRM() ? q(sb.from('employee_pay').select('*').eq('employee_id', id).maybeSingle()) : Promise.resolve(null),
+    canPay() ? q(sb.from('employee_pay').select('*').eq('employee_id', id).maybeSingle()) : Promise.resolve(null),
     isHR() || canUsers() ? q(sb.from('profiles').select('username, role, status').eq('employee_id', id).maybeSingle()) : Promise.resolve(null),
     q(sb.rpc('leave_balance', {p_employee: id, p_type: 'annual', p_year: year()})).catch(() => []),
-    isHRM() ? q(sb.from('pay_allowances').select('*').eq('employee_id', id).order('start_date', {ascending: false})) : Promise.resolve([]),
+    canPay() ? q(sb.from('pay_allowances').select('*').eq('employee_id', id).order('start_date', {ascending: false})) : Promise.resolve([]),
     q(sb.from('leave_requests').select('*').eq('employee_id', id).order('start_date', {ascending: false}).limit(12)).catch(() => [])
   ]);
   const att = await attendanceMonth(e, today().slice(0, 7)).catch(() => []);
@@ -532,14 +533,14 @@ V.profile = async () => {
     <dt>Fingerprint no.</dt><dd class="mono">${e.device_user_id ? esc(e.device_user_id) : '<span class="muted">Not set</span>'}</dd>
     ${e.email ? `<dt>Email</dt><dd>${esc(e.email)}</dd>` : ''}${e.phone ? `<dt>Phone</dt><dd>${esc(e.phone)}</dd>` : ''}
     ${e.emergency_contact ? `<dt>Emergency</dt><dd>${esc(e.emergency_contact)}</dd>` : ''}
-    ${isHR() || isHRM() ? `<dt>End of service</dt><dd class="small">${eos}</dd>` : ''}
+    ${isHR() || canPay() ? `<dt>End of service</dt><dd class="small">${eos}</dd>` : ''}
     ${isHR() || canUsers() ? `<dt>Login</dt><dd>${prof ? `${esc(prof.username)} · ${ROLE_NAMES[prof.role]}${prof.status === 'disabled' ? ' · disabled' : ''}` : '<span class="muted">No login yet</span>'}</dd>` : ''}</dl></div>`;
   const docPanel = seeDocs ? `<div class="panel"><div class="row between" style="margin-bottom:6px"><h2 style="margin:0">Documents (${docs.length})</h2>${canDocs() ? `<button class="btn sm" data-a="newDoc" data-id="${e.id}">+ Upload</button>` : ''}</div>${docsTable(docs, false)}</div>` : '';
   const leavePanel = `<div class="panel"><h2>Leave</h2><div class="bal" style="margin-bottom:14px">
       <div><b>${b?.remaining ?? '–'}</b><span>Annual leave left of ${b?.entitled ?? 0} in ${year()}</span></div>
       <div><b style="font-size:16px">${lastLeave ? fmt(lastLeave.start_date) : 'None'}</b><span>${lastLeave ? `Last leave: ${esc(typeName(lastLeave.leave_type))}, ${lastLeave.days} days` : 'No leave taken yet'}</span></div></div>
     ${requestTable(reqs, false)}</div>`;
-  const payPanel = isHRM() ? `<div class="panel"><h2>Pay</h2>${pay ? `<div class="bal" style="margin-bottom:16px"><div><b>${omr(pay.basic_salary)}</b><span>Basic salary (OMR)</span></div><div><b>${omr(allowNow)}</b><span>Allowances now (OMR)</span></div><div><b>${omr(Number(pay.basic_salary) + allowNow)}</b><span>Gross salary (OMR)</span></div></div>
+  const payPanel = canPay() ? `<div class="panel"><h2>Pay</h2>${pay ? `<div class="bal" style="margin-bottom:16px"><div><b>${omr(pay.basic_salary)}</b><span>Basic salary (OMR)</span></div><div><b>${omr(allowNow)}</b><span>Allowances now (OMR)</span></div><div><b>${omr(Number(pay.basic_salary) + allowNow)}</b><span>Gross salary (OMR)</span></div></div>
       ${pay.bank_iban ? `<p class="small muted" style="margin:-4px 0 14px">Bank account <span class="mono">${esc(pay.bank_iban)}</span>${pay.bank_bic ? ' · ' + esc(pay.bank_bic) : ''}</p>` : '<p class="msg bad">No bank account. Add it with Edit details.</p>'}` : '<p class="msg bad">No basic salary yet. Add it with Edit details.</p>'}
     ${allowancesBlock(e.id, allows)}</div>` : '';
   const attPanel = `<div class="panel"><h2>Attendance this month</h2>${attTable(att.slice(0, 10), false)}</div>`;
@@ -554,8 +555,8 @@ function docsTable(docs, withEmp){
 }
 async function employeeForm(id){
   const e = id ? await q(sb.from('employees').select('*').eq('id', id).single()) : {nat_type: 'omani', gender: 'male', religion: 'muslim', status: 'active', contract_type: 'unlimited', join_date: today()};
-  const pay = id && isHRM() ? await q(sb.from('employee_pay').select('*').eq('employee_id', id).maybeSingle()) : null;
-  const allows = id && isHRM() ? await q(sb.from('pay_allowances').select('*').eq('employee_id', id).is('end_date', null)) : [];
+  const pay = id && canPay() ? await q(sb.from('employee_pay').select('*').eq('employee_id', id).maybeSingle()) : null;
+  const allows = id && canPay() ? await q(sb.from('pay_allowances').select('*').eq('employee_id', id).is('end_date', null)) : [];
   const allowOf = n => allows.find(a => a.name === n)?.amount ?? '';
   const others = allows.filter(a => !MAIN_ALLOWANCES.includes(a.name));
   const all = await q(sb.from('employees').select('id, full_name').not('status', 'in', '(resigned,terminated)').order('full_name'));
@@ -581,7 +582,7 @@ async function employeeForm(id){
       <div class="f full"><label for="ef_emergency_contact">Emergency contact</label><input id="ef_emergency_contact" value="${esc(e.emergency_contact || '')}"></div>
       <div class="f"><label for="ef_status">Status</label><select id="ef_status">${Object.entries(EMP_STATUS).map(([k, v]) => opt(k, e.status, v)).join('')}</select></div>
       ${inp('end_date', 'Last working day', 'date')}
-      ${isHRM() ? `<h2 class="full" style="margin:10px 0 0;padding-top:14px;border-top:1px solid var(--line)">Salary</h2>
+      ${canPay() ? `<h2 class="full" style="margin:10px 0 0;padding-top:14px;border-top:1px solid var(--line)">Salary</h2>
         <div class="f"><label for="pf_basic">Basic salary (OMR a month)</label><input id="pf_basic" class="payf" type="number" step="0.001" min="0" value="${pay?.basic_salary ?? ''}"></div>
         ${MAIN_ALLOWANCES.map((n, i) => `<div class="f"><label for="pf_al${i}">${n} allowance (OMR)</label><input id="pf_al${i}" class="payf" type="number" step="0.001" min="0" value="${allowOf(n)}"></div>`).join('')}
         <div class="calc full" id="pfGross" data-other="${others.reduce((t, a) => t + Number(a.amount), 0)}" style="margin:0"></div>
@@ -592,7 +593,7 @@ async function employeeForm(id){
     <p class="muted small">Setting the status to Resigned or Terminated disables the employee's login at once. The record is kept.</p>
     <div id="efErr" class="msg bad" hidden></div>
     <button class="btn primary" id="efBtn">${id ? 'Save changes' : 'Add employee'}</button></form>`);
-  if (isHRM()) updateGross();
+  if (canPay()) updateGross();
 }
 const MAIN_ALLOWANCES = ['Housing', 'Transport', 'Other'];
 function updateGross(){
@@ -632,10 +633,10 @@ async function saveEmployee(form){
     if (id && g('employee_no').trim()) row.employee_no = g('employee_no').trim();
     if (['resigned', 'terminated'].includes(row.status) && !row.end_date) row.end_date = today();
     const saved = id ? await q(sb.from('employees').update(row).eq('id', id).select().single()) : await q(sb.from('employees').insert(row).select().single());
-    if (isHRM() && ($('pf_basic').value !== '' || $('pf_bic').value !== '' || $('pf_iban').value !== '')){
+    if (canPay() && ($('pf_basic').value !== '' || $('pf_bic').value !== '' || $('pf_iban').value !== '')){
       await q(sb.from('employee_pay').upsert({employee_id: saved.id, basic_salary: Number($('pf_basic').value || 0), bank_bic: $('pf_bic').value.trim().toUpperCase(), bank_iban: $('pf_iban').value.trim(), updated_at: new Date().toISOString()}));
     }
-    if (isHRM()) await saveMainAllowances(saved.id, !id, saved.join_date);
+    if (canPay()) await saveMainAllowances(saved.id, !id, saved.join_date);
     toast(id ? 'Employee saved' : 'Employee added');
     openEmployee(saved.id);
   } catch (e){ const el = $('efErr'); el.textContent = errText(e); el.hidden = false; $('efBtn').disabled = false; }

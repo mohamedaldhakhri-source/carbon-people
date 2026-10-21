@@ -12,7 +12,7 @@ The website is plain HTML and JavaScript in `web/`. Data, sign-in and files live
 | Line manager | Anyone with direct reports. Approves their team's leave first and sees team leave. No special role needed. |
 | HR Officer | All employee records and documents, final leave approval, letters, reports, holidays. Cannot see salaries. |
 | HR Manager | Everything HR Officer does, plus salaries, allowances, payroll, leave rules, user accounts and the audit log. |
-| System Admin | Company setup: employee records, documents, departments, leave rules, user accounts, audit log. Cannot see salaries. |
+| System Admin | Company setup: employee records, documents, salaries and payroll, departments, leave rules, user accounts, audit log. |
 
 There is no self sign-up. HR Manager or System Admin creates each login on **User accounts** and links it to one employee. The employee must set a new password at first sign-in. When an employee's status is set to Resigned or Terminated, their login is disabled at once; the record is kept.
 
@@ -32,7 +32,7 @@ There is no self sign-up. HR Manager or System Admin creates each login on **Use
 
 ## Setting up a new database
 
-Run `supabase/schema.sql`, then `supabase/payroll.sql`, `supabase/excuses.sql` and `supabase/attendance.sql`, once in **SQL Editor** on an empty project. Then create the first account there:
+Run `supabase/schema.sql`, then `supabase/payroll.sql`, `supabase/excuses.sql`, `supabase/attendance.sql` and `supabase/admin_pay.sql`, once in **SQL Editor** on an empty project. Then create the first account there:
 
 ```sql
 select public.create_user_account('mohamed', 'a-temporary-password', 'admin', null, 'staff.carbon.local');
